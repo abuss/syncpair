@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use warp::Filter;
+use tracing::{info, warn, error, debug};
 
 use crate::types::{FileInfo, UploadRequest, UploadResponse, SyncRequest, SyncResponse, FileConflict, DownloadResponse, DeleteRequest, DeleteResponse};
 use crate::utils::{calculate_file_hash, load_client_state};
@@ -74,7 +75,7 @@ impl SimpleServer {
                                 files_to_delete: vec![],
                                 conflicts: vec![],
                             };
-                            println!("Sync error: {}", e);
+                            error!("Sync error: {}", e);
                             Ok(warp::reply::json(&error_response))
                         }
                     }
@@ -129,14 +130,14 @@ impl SimpleServer {
                 .allow_headers(vec!["content-type"])
                 .allow_methods(vec!["POST", "GET"]));
 
-        println!("Server starting on http://0.0.0.0:{}", port);
+        info!("Server starting on http://0.0.0.0:{}", port);
         
         // Create a graceful shutdown future
         let shutdown = async {
             tokio::signal::ctrl_c()
                 .await
                 .expect("Failed to install CTRL+C signal handler");
-            println!("\nShutdown signal received, stopping server...");
+            info!("\nShutdown signal received, stopping server...");
         };
 
         // Start server with graceful shutdown
@@ -147,10 +148,10 @@ impl SimpleServer {
         
         // Save final state before shutdown
         if let Err(e) = self.save_state() {
-            eprintln!("Warning: Failed to save server state during shutdown: {}", e);
+            warn!("Warning: Failed to save server state during shutdown: {}", e);
         }
         
-        println!("Server stopped successfully!");
+        info!("Server stopped successfully!");
         Ok(())
     }
 
@@ -196,7 +197,7 @@ impl SimpleServer {
             self.atomic_save_state(&state)?;
         }
         
-        println!("File uploaded: {}", upload_req.file_info.path);
+        debug!("File uploaded: {}", upload_req.file_info.path);
         Ok(UploadResponse {
             success: true,
             message: format!("File {} uploaded successfully", upload_req.file_info.path),
@@ -223,16 +224,16 @@ impl SimpleServer {
                 if let Some(server_file) = server_files.get(deleted_path) {
                     // Compare deletion time with server file modification time
                     if *deletion_time > server_file.modified {
-                        println!("📤 Client deleted file (newer than server): {}", deleted_path);
+                        info!("📤 Client deleted file (newer than server): {}", deleted_path);
                         
                         // Delete the file from server storage
                         let server_file_path = self.storage_dir.join(deleted_path);
                         if server_file_path.exists() {
                             if let Err(e) = std::fs::remove_file(&server_file_path) {
-                                eprintln!("Failed to delete {} from server storage: {}", deleted_path, e);
+                                error!("Failed to delete {} from server storage: {}", deleted_path, e);
                                 continue;
                             } else {
-                                println!("✓ Deleted from server storage: {}", deleted_path);
+                                debug!("✓ Deleted from server storage: {}", deleted_path);
                             }
                         }
                         
@@ -241,7 +242,7 @@ impl SimpleServer {
                         server_deleted_files.insert(deleted_path.clone(), *deletion_time);
                         state_modified = true;
                     } else {
-                        println!("⚠️  Client deletion ignored: server file {} is newer", deleted_path);
+                        warn!("⚠️  Client deletion ignored: server file {} is newer", deleted_path);
                         // Server file is newer, client should get the update
                         files_to_download.push(server_file.clone());
                     }
@@ -264,10 +265,10 @@ impl SimpleServer {
                 if let Some(client_file) = client_files.get(deleted_path) {
                     // Only tell client to delete if server deletion is newer than client file
                     if *server_deletion_time > client_file.modified {
-                        println!("📤 Sending deletion to client: {} (deleted at {})", deleted_path, server_deletion_time);
+                        debug!("📤 Sending deletion to client: {} (deleted at {})", deleted_path, server_deletion_time);
                         files_to_delete.push(deleted_path.clone());
                     } else {
-                        println!("ℹ️  Client file {} is newer than deletion, ignoring server deletion", deleted_path);
+                        info!("ℹ️  Client file {} is newer than deletion, ignoring server deletion", deleted_path);
                         // Client file is newer than deletion, so deletion should be ignored
                         // Mark for removal from server deleted files and restore file on server
                         deletions_to_remove.push(deleted_path.clone());
@@ -306,7 +307,7 @@ impl SimpleServer {
                             // Client never had this file or lost it, offer download
                             files_to_download.push(server_file.clone());
                         } else {
-                            println!("⚠️  Stale entry found in server state: {} (file missing from disk)", path);
+                            warn!("⚠️  Stale entry found in server state: {} (file missing from disk)", path);
                             // File was deleted on server side, add to deleted files with current time
                             let now = chrono::Utc::now();
                             server_deleted_files.insert(path.clone(), now);
@@ -364,7 +365,7 @@ impl SimpleServer {
             for path in paths_to_check {
                 let server_file_path = self.storage_dir.join(&path);
                 if !server_file_path.exists() {
-                    println!("🗑️  Removing stale entry from server state: {}", path);
+                    debug!("🗑️  Removing stale entry from server state: {}", path);
                     server_files.remove(&path);
                     let now = chrono::Utc::now();
                     server_deleted_files.insert(path, now);
@@ -457,7 +458,7 @@ impl SimpleServer {
         // Delete the file from disk if it exists
         if full_path.exists() {
             std::fs::remove_file(&full_path)?;
-            println!("🗑️  Deleted file from server storage: {}", file_path);
+            debug!("🗑️  Deleted file from server storage: {}", file_path);
         }
         
         // Atomically remove from server state and save

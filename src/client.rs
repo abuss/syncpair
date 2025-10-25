@@ -6,6 +6,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 use tokio::time::{sleep, interval, MissedTickBehavior};
 use tokio::sync::broadcast;
+use tracing::{info, warn, error, debug};
 
 use crate::types::{FileInfo, UploadRequest, UploadResponse, SyncRequest, SyncResponse, DownloadResponse, DeleteRequest, DeleteResponse};
 use crate::utils::{scan_directory, get_file_info, load_client_state, save_client_state, calculate_file_hash};
@@ -37,7 +38,7 @@ impl SimpleClient {
     }
 
     pub async fn initial_sync(&self) -> Result<()> {
-        println!("Starting bidirectional sync...");
+        info!("Starting bidirectional sync...");
  
         let current_files = scan_directory(&self.watch_dir)?;
         let mut state = load_client_state(&self.state_file)?;
@@ -52,7 +53,7 @@ impl SimpleClient {
         let mut newly_deleted_files = std::collections::HashMap::new();
         for (old_path, _) in &state.files {
             if !client_files.contains_key(old_path) {
-                println!("🗑️  Detected deletion: {}", old_path);
+                info!("🗑️  Detected deletion: {}", old_path);
                 let deletion_time = chrono::Utc::now();
                 newly_deleted_files.insert(old_path.clone(), deletion_time);
             }
@@ -79,22 +80,22 @@ impl SimpleClient {
         
         // Handle conflicts first
         for conflict in &sync_response.conflicts {
-            println!("⚠️  Conflict detected for file: {}", conflict.path);
-            println!("   Client: modified {}, hash {}", conflict.client_file.modified, &conflict.client_file.hash[..8]);
-            println!("   Server: modified {}, hash {}", conflict.server_file.modified, &conflict.server_file.hash[..8]);
+            warn!("⚠️  Conflict detected for file: {}", conflict.path);
+            warn!("   Client: modified {}, hash {}", conflict.client_file.modified, &conflict.client_file.hash[..8]);
+            warn!("   Server: modified {}, hash {}", conflict.server_file.modified, &conflict.server_file.hash[..8]);
             
             // For now, use a simple strategy: newer file wins, client wins on tie
             if conflict.server_file.modified > conflict.client_file.modified {
-                println!("   → Downloading server version (newer)");
+                info!("   → Downloading server version (newer)");
                 if let Err(e) = self.download_file(&conflict.path).await {
-                    println!("   ✗ Failed to download {}: {}", conflict.path, e);
-                    println!("   → Keeping client version instead");
+                    error!("   ✗ Failed to download {}: {}", conflict.path, e);
+                    warn!("   → Keeping client version instead");
                 }
             } else {
-                println!("   → Uploading client version (newer or same time)");
+                info!("   → Uploading client version (newer or same time)");
                 if let Some(file_info) = client_files.get(&conflict.path) {
                     if let Err(e) = self.upload_file(file_info).await {
-                        println!("   ✗ Failed to upload {}: {}", conflict.path, e);
+                        error!("   ✗ Failed to upload {}: {}", conflict.path, e);
                     }
                 }
             }
@@ -103,27 +104,27 @@ impl SimpleClient {
         // Upload files that need to be uploaded
         for file_path in &sync_response.files_to_upload {
             if let Some(file_info) = client_files.get(file_path) {
-                println!("↑ Uploading: {}", file_path);
+                debug!("↑ Uploading: {}", file_path);
                 if let Err(e) = self.upload_file(file_info).await {
-                    println!("✗ Failed to upload {}: {}", file_path, e);
+                    error!("✗ Failed to upload {}: {}", file_path, e);
                 }
             }
         }
         
         // Download files that need to be downloaded
         for file_info in &sync_response.files_to_download {
-            println!("↓ Downloading: {}", file_info.path);
+            debug!("↓ Downloading: {}", file_info.path);
             if let Err(e) = self.download_file(&file_info.path).await {
-                println!("✗ Failed to download {}: {}", file_info.path, e);
-                println!("  → File may have been deleted from server or is inaccessible");
+                error!("✗ Failed to download {}: {}", file_info.path, e);
+                warn!("  → File may have been deleted from server or is inaccessible");
             }
         }
         
         // Delete files that need to be deleted
         for file_path in &sync_response.files_to_delete {
-            println!("🗑️  Deleting: {}", file_path);
+            debug!("🗑️  Deleting: {}", file_path);
             if let Err(e) = self.delete_file(file_path).await {
-                println!("✗ Failed to delete {}: {}", file_path, e);
+                error!("✗ Failed to delete {}: {}", file_path, e);
             }
         }
         
@@ -140,7 +141,7 @@ impl SimpleClient {
         state.last_sync = chrono::Utc::now();
         save_client_state(&state, &self.state_file)?;
         
-        println!("✓ Bidirectional sync completed");
+        info!("✓ Bidirectional sync completed");
         Ok(())
     }
 
@@ -161,8 +162,8 @@ impl SimpleClient {
                         ));
                     }
                     
-                    println!("⚠️  Failed to connect to server (attempt {}/{}): {}", attempt, max_retries, e);
-                    println!("🔄 Retrying in {} seconds...", retry_delay.as_secs());
+                    warn!("⚠️  Failed to connect to server (attempt {}/{}): {}", attempt, max_retries, e);
+                    info!("🔄 Retrying in {} seconds...", retry_delay.as_secs());
                     
                     tokio::time::sleep(retry_delay).await;
                     
@@ -180,8 +181,8 @@ impl SimpleClient {
     }
 
     pub async fn start_watching_with_shutdown(&self, mut shutdown_rx: Option<broadcast::Receiver<()>>) -> Result<()> {
-        println!("Starting file system watcher for: {}", self.watch_dir.display());
-        println!("Periodic sync interval: {} seconds", self.sync_interval.as_secs());
+        info!("Starting file system watcher for: {}", self.watch_dir.display());
+        info!("Periodic sync interval: {} seconds", self.sync_interval.as_secs());
         
         // Perform initial sync with retries
         self.initial_sync_with_retries().await?;
@@ -226,15 +227,15 @@ impl SimpleClient {
                 } => {
                     match shutdown_result {
                         Ok(_) => {
-                            println!("Received shutdown signal, stopping file watcher...");
+                            info!("Received shutdown signal, stopping file watcher...");
                             break;
                         }
                         Err(broadcast::error::RecvError::Closed) => {
-                            println!("Shutdown channel closed, stopping file watcher...");
+                            info!("Shutdown channel closed, stopping file watcher...");
                             break;
                         }
                         Err(broadcast::error::RecvError::Lagged(_)) => {
-                            println!("Shutdown signal lagged, stopping file watcher...");
+                            warn!("Shutdown signal lagged, stopping file watcher...");
                             break;
                         }
                     }
@@ -242,9 +243,9 @@ impl SimpleClient {
                 
                 // Periodic sync trigger
                 _ = sync_timer.tick() => {
-                    println!("🔄 Performing periodic sync...");
+                    debug!("🔄 Performing periodic sync...");
                     if let Err(e) = self.initial_sync().await {
-                        eprintln!("Error during periodic sync: {}", e);
+                        error!("Error during periodic sync: {}", e);
                     }
                 }
                 
@@ -253,11 +254,11 @@ impl SimpleClient {
                     match event {
                         Some(event) => {
                             if let Err(e) = self.handle_file_event(event).await {
-                                eprintln!("Error handling file event: {}", e);
+                                error!("Error handling file event: {}", e);
                             }
                         }
                         None => {
-                            eprintln!("File watcher channel closed");
+                            error!("File watcher channel closed");
                             break;
                         }
                     }
@@ -267,10 +268,10 @@ impl SimpleClient {
         
         // Save final state before stopping
         if let Err(e) = self.save_final_state().await {
-            eprintln!("Warning: Failed to save final client state: {}", e);
+            warn!("Warning: Failed to save final client state: {}", e);
         }
         
-        println!("File watcher stopped successfully");
+        info!("File watcher stopped successfully");
         Ok(())
     }
 
@@ -283,7 +284,7 @@ impl SimpleClient {
                         sleep(Duration::from_millis(100)).await;
                         
                         if let Err(e) = self.handle_file_change(&path).await {
-                            eprintln!("Error syncing file {}: {}", path.display(), e);
+                            error!("Error syncing file {}: {}", path.display(), e);
                         }
                     }
                 }
@@ -292,7 +293,7 @@ impl SimpleClient {
                 for path in event.paths {
                     if self.should_sync_file(&path) {
                         if let Err(e) = self.handle_file_deletion(&path).await {
-                            eprintln!("Error handling file deletion {}: {}", path.display(), e);
+                            error!("Error handling file deletion {}: {}", path.display(), e);
                         }
                     }
                 }
@@ -316,7 +317,7 @@ impl SimpleClient {
             };
             
             if should_upload {
-                println!("Detected change in: {}", relative_path_str);
+                debug!("Detected change in: {}", relative_path_str);
                 self.upload_file(&file_info).await?;
                 
                 state.files.insert(file_info.path.clone(), file_info);
@@ -332,7 +333,7 @@ impl SimpleClient {
         if let Ok(relative_path) = file_path.strip_prefix(&self.watch_dir) {
             let relative_path_str = relative_path.to_string_lossy().to_string();
             
-            println!("Detected deletion: {}", relative_path_str);
+            debug!("Detected deletion: {}", relative_path_str);
             
             // Load current state
             let mut state = load_client_state(&self.state_file)?;
@@ -347,9 +348,9 @@ impl SimpleClient {
                 
                 // Send delete request to server immediately
                 if let Err(e) = self.send_delete_request(&relative_path_str).await {
-                    eprintln!("Failed to send delete request for {}: {}", relative_path_str, e);
+                    error!("Failed to send delete request for {}: {}", relative_path_str, e);
                 } else {
-                    println!("✓ Deletion synced to server: {}", relative_path_str);
+                    debug!("✓ Deletion synced to server: {}", relative_path_str);
                 }
                 
                 state.last_sync = chrono::Utc::now();
@@ -385,7 +386,7 @@ impl SimpleClient {
             .await?;
         
         if response.success {
-            println!("✓ Uploaded: {}", file_info.path);
+            debug!("✓ Uploaded: {}", file_info.path);
         } else {
             return Err(anyhow::anyhow!("Upload failed: {}", response.message));
         }
@@ -421,7 +422,7 @@ impl SimpleClient {
                     return Err(anyhow::anyhow!("Hash mismatch for downloaded file: {}", file_info.path));
                 }
                 
-                println!("✓ Downloaded: {}", file_info.path);
+                debug!("✓ Downloaded: {}", file_info.path);
             } else {
                 return Err(anyhow::anyhow!("Download response missing file info or content"));
             }
@@ -438,14 +439,14 @@ impl SimpleClient {
         if local_path.exists() {
             if local_path.is_file() {
                 std::fs::remove_file(&local_path)?;
-                println!("✓ Deleted: {}", file_path);
+                debug!("✓ Deleted: {}", file_path);
             } else if local_path.is_dir() {
                 std::fs::remove_dir_all(&local_path)?;
-                println!("✓ Deleted directory: {}", file_path);
+                debug!("✓ Deleted directory: {}", file_path);
             }
         } else {
             // File already doesn't exist, which is fine
-            println!("ℹ️  File already deleted: {}", file_path);
+            debug!("ℹ️  File already deleted: {}", file_path);
         }
         
         Ok(())
@@ -494,7 +495,7 @@ impl SimpleClient {
         
         state.last_sync = chrono::Utc::now();
         save_client_state(&state, &self.state_file)?;
-        println!("Final client state saved");
+        debug!("Final client state saved");
         Ok(())
     }
 }
