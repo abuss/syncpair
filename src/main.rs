@@ -7,11 +7,11 @@ use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, Env
 use tracing::{Level, info, error};
 use std::fs::OpenOptions;
 
-use syncit::client::SimpleClient;
-use syncit::server::SimpleServer;
+use syncpair::client::SimpleClient;
+use syncpair::server::SimpleServer;
 
 #[derive(Parser)]
-#[command(author, version, about = "A simple file synchronization tool", long_about = None)]
+#[command(author, version, about = "A bidirectional file synchronization tool", long_about = None)]
 struct Args {
     /// Log level: error, warn, info, debug, trace
     #[arg(short = 'v', long, default_value = "info", help = "Set log level")]
@@ -97,14 +97,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match args.command {
         Commands::Server { port, storage_dir } => {
-            info!("Starting syncit server on port {} with storage directory: {}", 
+            info!("Starting syncpair server on port {} with storage directory: {}", 
                      port, storage_dir.display());
             
             let server = SimpleServer::new(storage_dir)?;
             server.start(port).await?;
         }
         Commands::Client { server, dir, sync_interval } => {
-            info!("Starting syncit client, syncing {} to {} (sync every {}s)", 
+            info!("Starting syncpair client, syncing {} to {} (sync every {}s)", 
                      dir.display(), server, sync_interval);
             
             let client = SimpleClient::new(server, dir)
@@ -136,6 +136,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    info!("Syncit stopped successfully!");
+    info!("SyncPair stopped successfully!");
     Ok(())
 }

@@ -1,6 +1,6 @@
-# SyncIt - Advanced File Synchronization Tool
+# SyncPair - Advanced File Synchronization Tool
 
-SyncIt is a lightweight Rust-based file synchronization tool that enables **bidirectional sync** between client directories and a central server. The system uses SHA-256 hashes for change detection, timestamp-based conflict resolution, and real-time filesystem watching for automatic synchronization.
+SyncPair is a lightweight Rust-based file synchronization tool that enables **bidirectional sync** between client directories and a central server. The system uses SHA-256 hashes for change detection, timestamp-based conflict resolution, and real-time filesystem watching for automatic synchronization.
 
 ## Features
 
@@ -18,7 +18,7 @@ SyncIt is a lightweight Rust-based file synchronization tool that enables **bidi
 
 ## Architecture
 
-SyncIt uses an advanced bidirectional synchronization architecture:
+SyncPair uses an advanced bidirectional synchronization architecture:
 
 1. **Server Mode**: HTTP server that handles file uploads, downloads, and sync coordination via REST API
 2. **Client Mode**: Filesystem watcher with intelligent sync engine that handles conflicts and deletions
@@ -29,19 +29,19 @@ SyncIt uses an advanced bidirectional synchronization architecture:
 ```bash
 # Clone the repository
 git clone <repository-url>
-cd syncit
+cd syncpair
 
 # Build the project
 cargo build --release
 
-# The binary will be available at target/release/syncit
+# The binary will be available at target/release/syncpair
 ```
 
 ## Usage
 
 ### Command Line Options
 
-SyncIt provides comprehensive logging and configuration options:
+SyncPair provides comprehensive logging and configuration options:
 
 ```bash
 # Global options (available for both server and client)
@@ -50,38 +50,38 @@ SyncIt provides comprehensive logging and configuration options:
 --quiet                # Quiet mode - only show errors
 
 # Examples
-./syncit --log-level debug server --port 8080
-./syncit --quiet client --server http://localhost:8080
-./syncit --log-file sync.log client --dir ./my-files
+./syncpair --log-level debug server --port 8080
+./syncpair --quiet client --server http://localhost:8080
+./syncpair --log-file sync.log client --dir ./my-files
 ```
 
 ### Starting the Server
 
 ```bash
 # Start server on default port (8080) with default storage directory
-./target/release/syncit server
+./target/release/syncpair server
 
 # Start server on custom port with custom storage directory
-./target/release/syncit server --port 9000 --storage-dir /path/to/server/storage
+./target/release/syncpair server --port 9000 --storage-dir /path/to/server/storage
 
 # With detailed logging
-./target/release/syncit --log-level debug server --port 8080 --storage-dir ./server_files
+./target/release/syncpair --log-level debug server --port 8080 --storage-dir ./server_files
 ```
 
 ### Running the Client
 
 ```bash
 # Start client to watch and sync a directory (default: ./sync_dir to localhost:8080)
-./target/release/syncit client
+./target/release/syncpair client
 
 # Watch custom directory and sync to custom server
-./target/release/syncit client --server http://server:8080 --dir /path/to/sync/directory
+./target/release/syncpair client --server http://server:8080 --dir /path/to/sync/directory
 
 # With custom sync interval (default: 30 seconds)
-./target/release/syncit client --sync-interval 60 --dir ./documents
+./target/release/syncpair client --sync-interval 60 --dir ./documents
 
 # With quiet logging (production mode)
-./target/release/syncit --quiet client --server http://production-server:8080
+./target/release/syncpair --quiet client --server http://production-server:8080
 ```
 
 ## How It Works
@@ -118,14 +118,14 @@ When the same file is modified on multiple clients:
 
 ### File States
 
-- **Client State**: Tracks local files and deletion history with `.syncit_state.json` in the watch directory
+- **Client State**: Tracks local files and deletion history with `.syncpair_state.json` in the watch directory
 - **Server State**: Maintains synchronized files and global deletion history with `server_state.json`
 - **Change Detection**: Compares file hashes and modification timestamps to determine sync actions
 - **Deletion Tracking**: Timestamp-based deleted file tracking prevents conflicts and resurrection
 
 ## Logging System
 
-SyncIt provides a comprehensive logging system suitable for both development and production use:
+SyncPair provides a comprehensive logging system suitable for both development and production use:
 
 ### Log Levels
 
@@ -139,32 +139,32 @@ SyncIt provides a comprehensive logging system suitable for both development and
 
 ```bash
 # Set log level
-./syncit --log-level debug client
+./syncpair --log-level debug client
 
 # Write logs to file (no console output)
-./syncit --log-file sync.log server
+./syncpair --log-file sync.log server
 
 # Quiet mode (errors only, perfect for production)
-./syncit --quiet client
+./syncpair --quiet client
 
 # Examples
-./syncit --log-level info --log-file production.log server     # Production server
-./syncit --log-level debug client                              # Development debugging  
-./syncit --quiet --log-file client-prod.log client            # Production client
+./syncpair --log-level info --log-file production.log server     # Production server
+./syncpair --log-level debug client                              # Development debugging  
+./syncpair --quiet --log-file client-prod.log client            # Production client
 ```
 
 ### Log Format
 
 ```
-2025-10-25T08:17:44.470350Z  INFO syncit::client: Starting bidirectional sync...
-2025-10-25T08:17:44.471308Z  WARN syncit::client: ⚠️  Conflict detected for file: document.txt
-2025-10-25T08:17:44.472000Z DEBUG syncit::client: ✓ Downloaded: document.txt
+2025-10-25T08:17:44.470350Z  INFO syncpair::client: Starting bidirectional sync...
+2025-10-25T08:17:44.471308Z  WARN syncpair::client: ⚠️  Conflict detected for file: document.txt
+2025-10-25T08:17:44.472000Z DEBUG syncpair::client: ✓ Downloaded: document.txt
 ```
 
 Each log entry includes:
 - **Timestamp**: ISO 8601 format with microsecond precision
 - **Level**: Color-coded log level (INFO, WARN, ERROR, DEBUG, TRACE)
-- **Component**: Which part of the system generated the log (syncit, syncit::client, syncit::server)
+- **Component**: Which part of the system generated the log (syncpair, syncpair::client, syncpair::server)
 - **Message**: Human-readable description with context
 
 ## Technical Details
@@ -267,18 +267,18 @@ cargo clippy                   # Linting
 
 ```bash
 # Production Server (with logging to file)
-./target/release/syncit --quiet --log-file /var/log/syncit-server.log \
-    server --port 8080 --storage-dir /data/syncit
+./target/release/syncpair --quiet --log-file /var/log/syncpair-server.log \
+    server --port 8080 --storage-dir /data/syncpair
 
 # Production Client (quiet mode with error-only logging)  
-./target/release/syncit --quiet --log-file /var/log/syncit-client.log \
+./target/release/syncpair --quiet --log-file /var/log/syncpair-client.log \
     client --server http://sync-server:8080 --dir /home/user/documents
 
 # Development setup with detailed logging
-./target/release/syncit --log-level debug \
+./target/release/syncpair --log-level debug \
     server --port 8080 --storage-dir ./test-server
 
-./target/release/syncit --log-level debug \
+./target/release/syncpair --log-level debug \
     client --server http://localhost:8080 --dir ./test-client
 ```
 
@@ -286,13 +286,13 @@ cargo clippy                   # Linting
 
 ```bash
 # Terminal 1: Start server
-./target/release/syncit --log-level info server --port 8080 --storage-dir ./shared
+./target/release/syncpair --log-level info server --port 8080 --storage-dir ./shared
 
 # Terminal 2: Client 1 (Alice's files)
-./target/release/syncit client --server http://localhost:8080 --dir ./alice-files
+./target/release/syncpair client --server http://localhost:8080 --dir ./alice-files
 
 # Terminal 3: Client 2 (Bob's files)  
-./target/release/syncit client --server http://localhost:8080 --dir ./bob-files
+./target/release/syncpair client --server http://localhost:8080 --dir ./bob-files
 
 # Now files sync bidirectionally between Alice and Bob through the server
 # Conflicts are automatically resolved using timestamps
@@ -344,11 +344,11 @@ Potential improvements for advanced deployments:
 
 ```bash
 # Server (production)
-./syncit --quiet --log-file /var/log/syncit-server.log \
-         server --port 8080 --storage-dir /data/syncit
+./syncpair --quiet --log-file /var/log/syncpair-server.log \
+         server --port 8080 --storage-dir /data/syncpair
 
 # Client (production)  
-./syncit --quiet --log-file /var/log/syncit-client.log \
+./syncpair --quiet --log-file /var/log/syncpair-client.log \
          client --server http://sync-server:8080 --sync-interval 60
 ```
 
@@ -357,7 +357,7 @@ Potential improvements for advanced deployments:
 - **Log files**: Monitor log files for errors and warnings
 - **Storage space**: Ensure server storage directory has adequate space
 - **Network connectivity**: Clients will retry automatically on connection loss
-- **State files**: Back up `.syncit_state.json` and `server_state.json` for disaster recovery
+- **State files**: Back up `.syncpair_state.json` and `server_state.json` for disaster recovery
 
 ### Performance
 

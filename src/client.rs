@@ -21,7 +21,7 @@ pub struct SimpleClient {
 
 impl SimpleClient {
     pub fn new(server_url: String, watch_dir: PathBuf) -> Self {
-        let state_file = watch_dir.join(".syncit_state.json");
+        let state_file = watch_dir.join(".syncpair_state.json");
  
         Self {
             server_url,
@@ -477,7 +477,7 @@ impl SimpleClient {
         // Skip hidden files and the state file
         if let Some(file_name) = path.file_name() {
             let name = file_name.to_string_lossy();
-            !name.starts_with('.') && name != ".syncit_state.json"
+            !name.starts_with('.') && name != ".syncpair_state.json"
         } else {
             false
         }
