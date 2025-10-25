@@ -49,15 +49,16 @@ impl SimpleClient {
         }
         
         // Detect files that were deleted since last sync
-        let mut newly_deleted_files = Vec::new();
+        let mut newly_deleted_files = std::collections::HashMap::new();
         for (old_path, _) in &state.files {
             if !client_files.contains_key(old_path) {
                 println!("🗑️  Detected deletion: {}", old_path);
-                newly_deleted_files.push(old_path.clone());
+                let deletion_time = chrono::Utc::now();
+                newly_deleted_files.insert(old_path.clone(), deletion_time);
             }
         }
         
-        // Add newly deleted files to the deleted files list
+        // Add newly deleted files to the deleted files map
         state.deleted_files.extend(newly_deleted_files);
         
         // Send sync request to server
@@ -307,13 +308,11 @@ impl SimpleClient {
             
             // Check if this file was in our tracked files
             if state.files.contains_key(&relative_path_str) {
-                // Remove from tracked files and add to deleted list
-                state.files.remove(&relative_path_str);
+                let deletion_time = chrono::Utc::now();
                 
-                // Add to deleted files list if not already there
-                if !state.deleted_files.contains(&relative_path_str) {
-                    state.deleted_files.push(relative_path_str.clone());
-                }
+                // Remove from tracked files and add to deleted list with timestamp
+                state.files.remove(&relative_path_str);
+                state.deleted_files.insert(relative_path_str.clone(), deletion_time);
                 
                 // Send delete request to server immediately
                 if let Err(e) = self.send_delete_request(&relative_path_str).await {

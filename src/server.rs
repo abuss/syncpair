@@ -11,7 +11,7 @@ use crate::utils::{calculate_file_hash, load_client_state};
 pub struct SimpleServer {
     storage_dir: PathBuf,
     files: Arc<Mutex<HashMap<String, FileInfo>>>,
-    deleted_files: Arc<Mutex<Vec<String>>>,
+    deleted_files: Arc<Mutex<HashMap<String, chrono::DateTime<chrono::Utc>>>>,
 }
 
 impl SimpleServer {
@@ -24,7 +24,7 @@ impl SimpleServer {
             let state = load_client_state(&state_file)?;
             (state.files, state.deleted_files)
         } else {
-            (HashMap::new(), Vec::new())
+            (HashMap::new(), HashMap::new())
         };
         
         Ok(Self {
@@ -218,38 +218,68 @@ impl SimpleServer {
             let mut conflicts = Vec::new();
             let mut state_modified = false;
 
-            // Handle files that the client has deleted
-            for deleted_path in &client_deleted_files {
-                if server_files.contains_key(deleted_path) {
-                    println!("📤 Client deleted file, removing from server: {}", deleted_path);
-                    
-                    // Delete the file from server storage
-                    let server_file_path = self.storage_dir.join(deleted_path);
-                    if server_file_path.exists() {
-                        if let Err(e) = std::fs::remove_file(&server_file_path) {
-                            eprintln!("Failed to delete {} from server storage: {}", deleted_path, e);
-                            continue;
-                        } else {
-                            println!("✓ Deleted from server storage: {}", deleted_path);
+            // Handle files that the client has deleted with timestamp comparison
+            for (deleted_path, deletion_time) in &client_deleted_files {
+                if let Some(server_file) = server_files.get(deleted_path) {
+                    // Compare deletion time with server file modification time
+                    if *deletion_time > server_file.modified {
+                        println!("📤 Client deleted file (newer than server): {}", deleted_path);
+                        
+                        // Delete the file from server storage
+                        let server_file_path = self.storage_dir.join(deleted_path);
+                        if server_file_path.exists() {
+                            if let Err(e) = std::fs::remove_file(&server_file_path) {
+                                eprintln!("Failed to delete {} from server storage: {}", deleted_path, e);
+                                continue;
+                            } else {
+                                println!("✓ Deleted from server storage: {}", deleted_path);
+                            }
                         }
+                        
+                        // Remove from server state and add to deleted files with timestamp
+                        server_files.remove(deleted_path);
+                        server_deleted_files.insert(deleted_path.clone(), *deletion_time);
+                        state_modified = true;
+                    } else {
+                        println!("⚠️  Client deletion ignored: server file {} is newer", deleted_path);
+                        // Server file is newer, client should get the update
+                        files_to_download.push(server_file.clone());
                     }
-                    
-                    // Remove from server state and add to deleted files list
-                    server_files.remove(deleted_path);
-                    if !server_deleted_files.contains(deleted_path) {
-                        server_deleted_files.push(deleted_path.clone());
+                } else if let Some(server_deletion_time) = server_deleted_files.get(deleted_path) {
+                    // File was already deleted on server, update timestamp if client deletion is newer
+                    if *deletion_time > *server_deletion_time {
+                        server_deleted_files.insert(deleted_path.clone(), *deletion_time);
+                        state_modified = true;
                     }
+                } else {
+                    // File doesn't exist on server and wasn't deleted before, record the deletion
+                    server_deleted_files.insert(deleted_path.clone(), *deletion_time);
                     state_modified = true;
                 }
             }
 
-            // Send files that were deleted by other clients to this client
-            for deleted_path in &*server_deleted_files {
-                // Only tell this client to delete if they still have the file
-                if client_files.contains_key(deleted_path) {
-                    println!("📤 Sending deletion to client: {}", deleted_path);
-                    files_to_delete.push(deleted_path.clone());
+            // Send files that were deleted by other clients to this client (if deletion is newer)
+            let mut deletions_to_remove = Vec::new();
+            for (deleted_path, server_deletion_time) in &*server_deleted_files {
+                if let Some(client_file) = client_files.get(deleted_path) {
+                    // Only tell client to delete if server deletion is newer than client file
+                    if *server_deletion_time > client_file.modified {
+                        println!("📤 Sending deletion to client: {} (deleted at {})", deleted_path, server_deletion_time);
+                        files_to_delete.push(deleted_path.clone());
+                    } else {
+                        println!("ℹ️  Client file {} is newer than deletion, ignoring server deletion", deleted_path);
+                        // Client file is newer than deletion, so deletion should be ignored
+                        // Mark for removal from server deleted files and restore file on server
+                        deletions_to_remove.push(deleted_path.clone());
+                        files_to_upload.push(deleted_path.clone());
+                        state_modified = true;
+                    }
                 }
+            }
+            
+            // Remove obsolete deletions
+            for path in deletions_to_remove {
+                server_deleted_files.remove(&path);
             }
 
             // Create snapshot for iteration to avoid borrow checker issues
@@ -259,18 +289,30 @@ impl SimpleServer {
             // Check files that exist on server but not on client
             for (path, server_file) in &server_files_snapshot {
                 if !client_files.contains_key(path) {
-                    // Verify the file actually exists on server disk before offering download
-                    let server_file_path = self.storage_dir.join(path);
-                    if server_file_path.exists() {
-                        files_to_download.push(server_file.clone());
-                    } else {
-                        println!("⚠️  Stale entry found in server state: {} (file missing from disk)", path);
-                        // File was deleted on server side, add to deleted files list
-                        if !server_deleted_files.contains(path) {
-                            server_deleted_files.push(path.clone());
+                    // Check if client deleted this file
+                    if let Some(client_deletion_time) = client_deleted_files.get(path) {
+                        // Client deleted it, check timestamps
+                        if *client_deletion_time > server_file.modified {
+                            // Client deletion is newer, delete from server (handled above)
+                            continue;
+                        } else {
+                            // Server file is newer, client should get it
+                            files_to_download.push(server_file.clone());
                         }
-                        files_to_delete.push(path.clone());
-                        state_modified = true;
+                    } else {
+                        // Verify the file actually exists on server disk before offering download
+                        let server_file_path = self.storage_dir.join(path);
+                        if server_file_path.exists() {
+                            // Client never had this file or lost it, offer download
+                            files_to_download.push(server_file.clone());
+                        } else {
+                            println!("⚠️  Stale entry found in server state: {} (file missing from disk)", path);
+                            // File was deleted on server side, add to deleted files with current time
+                            let now = chrono::Utc::now();
+                            server_deleted_files.insert(path.clone(), now);
+                            files_to_delete.push(path.clone());
+                            state_modified = true;
+                        }
                     }
                 }
             }
@@ -278,12 +320,22 @@ impl SimpleServer {
             // Check files that exist on client but not on server
             for (path, client_file) in &client_files {
                 if !server_files.contains_key(path) {
-                    // Only request upload if file wasn't deleted by another client
-                    if !server_deleted_files.contains(path) {
-                        files_to_upload.push(path.clone());
+                    // Check if this file was deleted on server
+                    if let Some(server_deletion_time) = server_deleted_files.get(path) {
+                        // File was deleted on server, check timestamps
+                        if client_file.modified > *server_deletion_time {
+                            // Client file is newer than deletion, client should upload
+                            files_to_upload.push(path.clone());
+                            // Remove from deleted files since we're restoring it
+                            server_deleted_files.remove(path);
+                            state_modified = true;
+                        } else {
+                            // Deletion is newer, client should delete
+                            files_to_delete.push(path.clone());
+                        }
                     } else {
-                        // File was deleted by another client, tell this client to delete it
-                        files_to_delete.push(path.clone());
+                        // File doesn't exist on server and wasn't deleted, upload it
+                        files_to_upload.push(path.clone());
                     }
                 } else {
                     let server_file = &server_files[path];
@@ -314,9 +366,8 @@ impl SimpleServer {
                 if !server_file_path.exists() {
                     println!("🗑️  Removing stale entry from server state: {}", path);
                     server_files.remove(&path);
-                    if !server_deleted_files.contains(&path) {
-                        server_deleted_files.push(path);
-                    }
+                    let now = chrono::Utc::now();
+                    server_deleted_files.insert(path, now);
                     state_modified = true;
                 }
             }
@@ -401,6 +452,7 @@ impl SimpleServer {
     async fn handle_delete(&self, delete_req: DeleteRequest) -> Result<DeleteResponse> {
         let file_path = &delete_req.path;
         let full_path = self.storage_dir.join(file_path);
+        let deletion_time = chrono::Utc::now();
         
         // Delete the file from disk if it exists
         if full_path.exists() {
@@ -415,10 +467,8 @@ impl SimpleServer {
             
             files.remove(file_path);
             
-            // Add to deleted files list if not already there
-            if !deleted_files.contains(file_path) {
-                deleted_files.push(file_path.clone());
-            }
+            // Add to deleted files with current timestamp
+            deleted_files.insert(file_path.clone(), deletion_time);
             
             // Create state snapshot for saving
             let state = crate::types::ClientState {

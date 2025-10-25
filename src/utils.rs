@@ -2,6 +2,7 @@ use anyhow::Result;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::Path;
+use std::collections::HashMap;
 use walkdir::WalkDir;
 use chrono::Utc;
 use crate::types::{FileInfo, ClientState};
@@ -53,17 +54,17 @@ pub fn load_client_state(state_path: &Path) -> Result<ClientState> {
     if !state_path.exists() {
         return Ok(ClientState {
             files: std::collections::HashMap::new(),
-            deleted_files: Vec::new(),
+            deleted_files: HashMap::new(),
             last_sync: Utc::now(),
         });
     }
     
     let content = fs::read_to_string(state_path)?;
-    let mut state: ClientState = serde_json::from_str(&content).unwrap_or_else(|_| {
+    let state: ClientState = serde_json::from_str(&content).unwrap_or_else(|_| {
         // If deserialization fails (e.g., due to missing fields), create a new state
         ClientState {
             files: std::collections::HashMap::new(),
-            deleted_files: Vec::new(),
+            deleted_files: HashMap::new(),
             last_sync: Utc::now(),
         }
     });

@@ -11,9 +11,15 @@ pub struct FileInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeletionInfo {
+    pub path: String,
+    pub deleted_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientState {
     pub files: HashMap<String, FileInfo>,
-    pub deleted_files: Vec<String>,  // Files deleted since last sync
+    pub deleted_files: HashMap<String, DateTime<Utc>>,  // Files deleted with timestamp
     pub last_sync: DateTime<Utc>,
 }
 
@@ -32,7 +38,7 @@ pub struct UploadResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncRequest {
     pub files: HashMap<String, FileInfo>,
-    pub deleted_files: Vec<String>,  // Files deleted since last sync
+    pub deleted_files: HashMap<String, DateTime<Utc>>,  // Files deleted with timestamp
     pub last_sync: DateTime<Utc>,
 }
 
