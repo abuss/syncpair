@@ -21,7 +21,7 @@ pub struct SimpleClient {
 impl SimpleClient {
     pub fn new(server_url: String, watch_dir: PathBuf) -> Self {
         let state_file = watch_dir.join(".syncit_state.json");
-        
+ 
         Self {
             server_url,
             watch_dir,
@@ -38,16 +38,16 @@ impl SimpleClient {
 
     pub async fn initial_sync(&self) -> Result<()> {
         println!("Starting bidirectional sync...");
-        
+ 
         let current_files = scan_directory(&self.watch_dir)?;
         let mut state = load_client_state(&self.state_file)?;
-        
+ 
         // Build client file map
         let mut client_files = std::collections::HashMap::new();
         for file_info in current_files {
             client_files.insert(file_info.path.clone(), file_info);
         }
-        
+ 
         // Detect files that were deleted since last sync
         let mut newly_deleted_files = std::collections::HashMap::new();
         for (old_path, _) in &state.files {
@@ -57,10 +57,10 @@ impl SimpleClient {
                 newly_deleted_files.insert(old_path.clone(), deletion_time);
             }
         }
-        
+ 
         // Add newly deleted files to the deleted files map
         state.deleted_files.extend(newly_deleted_files);
-        
+ 
         // Send sync request to server
         let sync_request = SyncRequest {
             files: client_files.clone(),
@@ -144,6 +144,37 @@ impl SimpleClient {
         Ok(())
     }
 
+    async fn initial_sync_with_retries(&self) -> Result<()> {
+        let max_retries = 5;
+        let mut retry_delay = std::time::Duration::from_secs(1);
+        
+        for attempt in 1..=max_retries {
+            match self.initial_sync().await {
+                Ok(()) => {
+                    return Ok(());
+                }
+                Err(e) => {
+                    if attempt == max_retries {
+                        return Err(anyhow::anyhow!(
+                            "Failed to connect to server after {} attempts. Last error: {}",
+                            max_retries, e
+                        ));
+                    }
+                    
+                    println!("⚠️  Failed to connect to server (attempt {}/{}): {}", attempt, max_retries, e);
+                    println!("🔄 Retrying in {} seconds...", retry_delay.as_secs());
+                    
+                    tokio::time::sleep(retry_delay).await;
+                    
+                    // Exponential backoff: double the delay, max 30 seconds
+                    retry_delay = std::cmp::min(retry_delay * 2, std::time::Duration::from_secs(30));
+                }
+            }
+        }
+        
+        unreachable!()
+    }
+
     pub async fn start_watching(&self) -> Result<()> {
         self.start_watching_with_shutdown(None).await
     }
@@ -152,8 +183,8 @@ impl SimpleClient {
         println!("Starting file system watcher for: {}", self.watch_dir.display());
         println!("Periodic sync interval: {} seconds", self.sync_interval.as_secs());
         
-        // Perform initial sync
-        self.initial_sync().await?;
+        // Perform initial sync with retries
+        self.initial_sync_with_retries().await?;
         
         // Set up file system watcher
         let (tx, rx) = mpsc::channel();

@@ -19,7 +19,7 @@ pub struct DeletionInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientState {
     pub files: HashMap<String, FileInfo>,
-    pub deleted_files: HashMap<String, DateTime<Utc>>,  // Files deleted with timestamp
+    pub deleted_files: HashMap<String, DateTime<Utc>>, // Files deleted with timestamp
     pub last_sync: DateTime<Utc>,
 }
 
@@ -38,7 +38,7 @@ pub struct UploadResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SyncRequest {
     pub files: HashMap<String, FileInfo>,
-    pub deleted_files: HashMap<String, DateTime<Utc>>,  // Files deleted with timestamp
+    pub deleted_files: HashMap<String, DateTime<Utc>>, // Files deleted with timestamp
     pub last_sync: DateTime<Utc>,
 }
 
@@ -101,19 +101,19 @@ pub mod error {
     pub enum SyncError {
         #[error("IO error: {0}")]
         Io(#[from] std::io::Error),
-        
+
         #[error("Network error: {0}")]
         Network(#[from] reqwest::Error),
-        
+
         #[error("Serialization error: {0}")]
         Serialization(#[from] serde_json::Error),
-        
+
         #[error("File not found: {0}")]
         FileNotFound(String),
-        
+
         #[error("Hash mismatch: {0}")]
         HashMismatch(String),
-        
+
         #[error("Watch error: {0}")]
         Watch(String),
     }
