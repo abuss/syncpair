@@ -9,7 +9,7 @@ use tokio::sync::broadcast;
 use tracing::{info, warn, error, debug};
 
 use crate::types::{FileInfo, UploadRequest, UploadResponse, SyncRequest, SyncResponse, DownloadResponse, DeleteRequest, DeleteResponse};
-use crate::utils::{scan_directory, get_file_info, load_client_state, save_client_state, calculate_file_hash};
+use crate::utils::{scan_directory_with_patterns, get_file_info, load_client_state, save_client_state, calculate_file_hash};
 
 #[derive(Clone)]
 pub struct SimpleClient {
@@ -20,6 +20,7 @@ pub struct SimpleClient {
     sync_interval: Duration,
     client_id: Option<String>,
     directory: Option<String>,
+    exclude_patterns: Vec<String>,
 }
 
 impl SimpleClient {
@@ -41,6 +42,7 @@ impl SimpleClient {
             sync_interval: Duration::from_secs(30), // Default: sync every 30 seconds
             client_id: None,
             directory: None,
+            exclude_patterns: Vec::new(),
         }
     }
 
@@ -59,10 +61,15 @@ impl SimpleClient {
         self
     }
 
+    pub fn with_exclude_patterns(mut self, patterns: Vec<String>) -> Self {
+        self.exclude_patterns = patterns;
+        self
+    }
+
     pub async fn initial_sync(&self) -> Result<()> {
         info!("Starting bidirectional sync...");
  
-        let current_files = scan_directory(&self.watch_dir)?;
+        let current_files = scan_directory_with_patterns(&self.watch_dir, &self.exclude_patterns)?;
         let mut state = load_client_state(&self.state_file)?;
  
         // Build client file map
@@ -153,7 +160,7 @@ impl SimpleClient {
         }
         
         // Update state with all current files (re-scan after downloads)
-        let final_files = scan_directory(&self.watch_dir)?;
+        let final_files = scan_directory_with_patterns(&self.watch_dir, &self.exclude_patterns)?;
         state.files.clear();
         for file_info in final_files {
             state.files.insert(file_info.path.clone(), file_info);
@@ -517,7 +524,7 @@ impl SimpleClient {
 
     async fn save_final_state(&self) -> Result<()> {
         // Perform one final scan to ensure state is up to date
-        let current_files = scan_directory(&self.watch_dir)?;
+        let current_files = scan_directory_with_patterns(&self.watch_dir, &self.exclude_patterns)?;
         let mut state = load_client_state(&self.state_file)?;
         
         // Update state with current files

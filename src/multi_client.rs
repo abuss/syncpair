@@ -30,9 +30,20 @@ impl MultiDirectoryClient {
             // Create the directory if it doesn't exist
             std::fs::create_dir_all(&local_path)?;
             
+            // Use appropriate directory naming based on whether directory is shared
+            let directory_name = if dir_config.settings.shared {
+                // Shared directories don't get client_id prefix
+                dir_config.name.clone()
+            } else {
+                // Client-specific directories get client_id prefix for isolation
+                format!("{}:{}", config.client_id, dir_config.name)
+            };
+            
             let client = SimpleClient::new(config.server.clone(), local_path)
                 .with_sync_interval(Duration::from_secs(dir_config.settings.sync_interval_seconds))
-                .with_client_id(format!("{}:{}", config.client_id, dir_config.name));
+                .with_client_id(format!("{}:{}", config.client_id, dir_config.name))
+                .with_directory(directory_name)
+                .with_exclude_patterns(dir_config.settings.ignore_patterns.clone());
             
             clients.insert(dir_config.name.clone(), client);
             

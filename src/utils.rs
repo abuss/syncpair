@@ -1,6 +1,7 @@
 use crate::types::{ClientState, FileInfo};
 use anyhow::Result;
 use chrono::Utc;
+use glob::Pattern;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
@@ -27,7 +28,25 @@ pub fn get_file_info(path: &Path, relative_path: &str) -> Result<FileInfo> {
 }
 
 pub fn scan_directory(dir_path: &Path) -> Result<Vec<FileInfo>> {
+    scan_directory_with_patterns(dir_path, &[])
+}
+
+pub fn scan_directory_with_patterns(dir_path: &Path, exclude_patterns: &[String]) -> Result<Vec<FileInfo>> {
     let mut files = Vec::new();
+    
+    // Compile exclude patterns once for efficiency
+    let compiled_patterns: Result<Vec<Pattern>, _> = exclude_patterns
+        .iter()
+        .map(|pattern| Pattern::new(pattern))
+        .collect();
+    
+    let compiled_patterns = match compiled_patterns {
+        Ok(patterns) => patterns,
+        Err(e) => {
+            log::warn!("Invalid exclude pattern: {}", e);
+            Vec::new() // Continue with no patterns if any are invalid
+        }
+    };
 
     for entry in WalkDir::new(dir_path).into_iter().filter_map(|e| e.ok()) {
         if entry.file_type().is_file() {
@@ -41,6 +60,30 @@ pub fn scan_directory(dir_path: &Path) -> Result<Vec<FileInfo>> {
             // Get relative path from the base directory
             let relative_path = entry.path().strip_prefix(dir_path)?;
             let relative_path_str = relative_path.to_string_lossy().to_string();
+            
+            // Check if file matches any exclude pattern
+            let should_exclude = compiled_patterns.iter().any(|pattern| {
+                // Check the full relative path for pattern matches
+                if pattern.matches(&relative_path_str) {
+                    return true;
+                }
+                
+                // Check if any component of the path matches the pattern
+                // This handles cases like "node_modules" matching "node_modules/package.json"
+                if relative_path.components().any(|component| {
+                    pattern.matches(component.as_os_str().to_string_lossy().as_ref())
+                }) {
+                    return true;
+                }
+                
+                // Check just the filename
+                pattern.matches(entry.path().file_name().unwrap_or_default().to_string_lossy().as_ref())
+            });
+            
+            if should_exclude {
+                log::debug!("Excluding file due to pattern match: {}", relative_path_str);
+                continue;
+            }
 
             let file_info = get_file_info(entry.path(), &relative_path_str)?;
             files.push(file_info);

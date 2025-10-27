@@ -5,7 +5,8 @@ SyncPair is a lightweight Rust-based file synchronization tool that enables **re
 ## Features
 
 - **Real-time collaboration**: Multiple clients share the same directories with instant synchronization
-- **Shared directory storage**: All clients working on the same directory see each other's changes immediately
+- **Shared & isolated directory support**: Mix shared collaborative directories with private client-specific directories
+- **Smart exclude patterns**: Flexible file filtering using glob patterns (*.tmp, node_modules/, etc.)
 - **Bidirectional synchronization**: Full two-way sync between all collaborating clients through the server
 - **Timestamp-based conflict resolution**: Newer files automatically win conflicts across all clients
 - **File deletion synchronization**: Deletions propagate between all collaborating clients and server
@@ -20,17 +21,50 @@ SyncPair is a lightweight Rust-based file synchronization tool that enables **re
 
 ## Architecture
 
-SyncPair uses a **shared directory collaboration architecture** that enables real-time teamwork:
+SyncPair uses a **hybrid shared/isolated directory architecture** that enables both real-time teamwork and private workspaces:
 
-1. **Server Mode**: HTTP server with shared directory storage - each directory (e.g., "documents") is accessible to all clients
-2. **Client Mode**: Filesystem watcher that syncs to shared directories, enabling instant collaboration
-3. **Shared Storage**: Multiple clients can connect to the same directory namespace for real-time collaboration
-4. **Sync Protocol**: RESTful API with endpoints for sync negotiation, uploads, downloads, and deletions
+1. **Server Mode**: HTTP server with flexible directory storage - directories can be shared across clients or isolated per client
+2. **Client Mode**: Filesystem watcher that syncs to shared or private directories based on configuration
+3. **Shared Storage**: Multiple clients can connect to the same shared directory for real-time collaboration
+4. **Isolated Storage**: Private client-specific directories for personal workspaces
+5. **Smart File Filtering**: Configurable exclude patterns to ignore temporary files, build artifacts, etc.
+6. **Sync Protocol**: RESTful API with endpoints for sync negotiation, uploads, downloads, and deletions
+
+### Directory Types & Server Storage
+
+The `shared` setting determines how directories are stored on the server:
+
+- **Private Directories** (`shared: false` or omitted): Each client gets isolated storage
+- **Shared Directories** (`shared: true`): Multiple clients collaborate on the same storage
+
+#### Server Storage Structure Example
+```
+server_storage/
+├── alice:personal_notes/          # Alice's private directory (isolated)
+│   ├── personal_diary.txt
+│   └── server_state.json
+├── bob:personal_workspace/        # Bob's private directory (isolated)
+│   ├── bob_notes.txt
+│   └── server_state.json
+└── team_project/                  # Shared directory (collaborative)
+    ├── project_plan.docx          # Visible to both Alice & Bob
+    ├── meeting_notes.txt          # Modified by Alice, visible to Bob
+    ├── code_review.md             # Added by Bob, visible to Alice
+    └── server_state.json          # Shared state for all collaborators
+```
+
+**Key Differences:**
+- **Private**: `client_id:directory_name` (e.g., `alice:personal_notes`)
+- **Shared**: `directory_name` only (e.g., `team_project`)
+- **Collaboration**: Multiple clients using same shared directory name work together
+- **Isolation**: Private directories are completely separate per client
 
 ### Collaboration Model
 
-- **Shared Directories**: When multiple clients sync to the same directory name (e.g., "documents"), they share the same files
-- **Real-time Synchronization**: Changes from any client immediately propagate to all other clients in the same directory
+- **Shared Directories**: When multiple clients configure the same directory name with `shared: true`, they collaborate in real-time
+- **Private Directories**: Default behavior where each client gets isolated storage space
+- **Real-time Synchronization**: Changes from any client immediately propagate to all other clients in shared directories
+- **Smart File Filtering**: Exclude patterns automatically filter out unwanted files (temp files, build artifacts, etc.)
 - **Automatic Conflict Resolution**: When multiple clients modify the same file, the newest version wins automatically
 - **Seamless Integration**: Clients can join and leave collaborative sessions without affecting others
 
@@ -99,9 +133,143 @@ config --file <FILE>   # Start multi-directory client using YAML configuration
 ./target/release/syncpair --quiet client --server http://production-server:8080
 ```
 
-### Multi-Directory Configuration
+## Multi-Directory Configuration
 
-For advanced users managing multiple directories:
+SyncPair supports advanced multi-directory configurations with both shared collaboration and private workspaces.
+
+### Basic Configuration
+
+Create a YAML configuration file to define your directory setup. Each client can have a mix of shared collaborative directories and private isolated directories:
+
+```yaml
+# Alice's configuration - mix of shared and private directories
+client_id: alice
+server: http://localhost:8080
+
+directories:
+  # Private directory - isolated to this client only
+  - name: personal_notes
+    local_path: ~/notes/
+    settings:
+      description: "Alice's personal notes and documents"
+      sync_interval_seconds: 30
+      # shared: false (default - creates server storage at alice:personal_notes/)
+      
+  # Shared directory - collaborative workspace with other clients
+  - name: team_project
+    local_path: ~/team-work/
+    settings:
+      description: "Shared team project files"
+      shared: true  # Multiple clients can use same "team_project" directory
+      sync_interval_seconds: 15
+      ignore_patterns:
+        - "*.tmp"
+        - "*.log"
+        - "node_modules/"
+        - ".git/"
+```
+
+```yaml
+# Bob's configuration - same shared directory, different private directory
+client_id: bob
+server: http://localhost:8080
+
+directories:
+  # Different private directory - isolated to Bob only
+  - name: personal_workspace
+    local_path: ~/bob-files/
+    settings:
+      description: "Bob's personal workspace"
+      sync_interval_seconds: 30
+      # shared: false (default - creates server storage at bob:personal_workspace/)
+      
+  # Same shared directory - collaborates with Alice
+  - name: team_project
+    local_path: ~/shared-work/
+    settings:
+      description: "Shared team project files"
+      shared: true  # Both Alice and Bob access same server directory
+      sync_interval_seconds: 15
+```
+
+### Advanced Configuration Options
+
+```yaml
+client_id: developer_workstation
+server: http://company-sync:8080
+
+directories:
+  # Personal development workspace (private)
+  - name: dev_workspace
+    local_path: ~/development/
+    settings:
+      description: "Personal development files"
+      sync_interval_seconds: 60
+      ignore_patterns:
+        - "target/"      # Rust build directory
+        - "node_modules/" # Node.js dependencies
+        - "*.tmp"
+        - "*.log"
+        - ".env"         # Environment files
+      
+  # Shared configuration files (collaborative)
+  - name: team_configs
+    local_path: ~/shared-configs/
+    settings:
+      description: "Shared team configuration files"
+      shared: true
+      sync_interval_seconds: 10  # Fast sync for config changes
+      ignore_patterns:
+        - "*.bak"
+        - "*.swp"
+        - ".DS_Store"
+        
+  # Documentation collaboration (shared)
+  - name: documentation
+    local_path: ~/docs/
+    settings:
+      description: "Team documentation"
+      shared: true
+      sync_interval_seconds: 30
+      ignore_patterns:
+        - "*.draft"
+        - "temp/*"
+```
+
+### Configuration Fields
+
+| Field | Description | Required | Default |
+|-------|-------------|----------|---------|
+| `client_id` | Unique identifier for this client | Yes | - |
+| `server` | Server URL (http://host:port) | Yes | - |
+| `directories[].name` | Directory identifier | Yes | - |
+| `directories[].local_path` | Local filesystem path | Yes | - |
+| `directories[].settings.description` | Human-readable description | No | None |
+| `directories[].settings.shared` | Enable sharing with other clients | No | `false` |
+| `directories[].settings.sync_interval_seconds` | Sync frequency in seconds | No | `30` |
+| `directories[].settings.enabled` | Enable/disable this directory | No | `true` |
+| `directories[].settings.ignore_patterns` | Glob patterns to exclude | No | `[]` |
+
+### Exclude Patterns
+
+Smart file filtering using glob patterns:
+
+```yaml
+ignore_patterns:
+  - "*.tmp"           # All .tmp files
+  - "*.log"           # All .log files  
+  - "node_modules/"   # Node.js dependencies directory
+  - "target/"         # Rust build directory
+  - ".git/"           # Git repository metadata
+  - "*.DS_Store"      # macOS system files
+  - "temp/*"          # Everything in temp directory
+  - "*.bak"           # Backup files
+  - "build/"          # Build output directory
+  - "*.cache"         # Cache files
+  - ".env"            # Environment configuration files
+```
+
+### Running Multi-Directory Configuration
 
 ```bash
 # Start multi-directory sync using YAML configuration
@@ -250,19 +418,21 @@ struct FileInfo {
 ### Dependencies
 
 Comprehensive dependency set for advanced functionality:
-- `tokio` - Async runtime and utilities
+- `tokio` - Async runtime and utilities  
 - `warp` - HTTP server framework with filtering
 - `notify` - Cross-platform filesystem watching
 - `reqwest` - Feature-rich HTTP client with retry support
-- `serde/serde_json` - Serialization and deserialization
+- `serde/serde_json/serde_yaml` - Serialization and deserialization
 - `sha2` - Cryptographic hash calculation
 - `clap` - Command line argument parsing
 - `anyhow/thiserror` - Error handling and propagation
 - `chrono` - Date and time manipulation with timezone support
 - `walkdir` - Recursive directory traversal
 - `urlencoding` - URL-safe path encoding
+- `glob` - Pattern matching for exclude patterns
 - `log/env_logger` - Traditional logging interface
 - `tracing/tracing-subscriber` - Structured, async-aware logging
+- `dirs` - Directory path utilities
 
 ## Project Structure
 
@@ -313,17 +483,21 @@ cargo clippy                   # Linting
     client --server http://localhost:8080 --dir ./test-client
 ```
 
-#### Multi-Client Scenario
+## Collaboration Examples
+
+### Real-time Team Collaboration
+
+Multiple clients can work together on shared directories with automatic conflict resolution:
 
 ```bash
 # Terminal 1: Start server
 ./target/release/syncpair --log-level info server --port 8080 --storage-dir ./shared
 
-# Terminal 2: Alice joins the "documents" collaboration
-./target/release/syncpair client --server http://localhost:8080 --dir ./alice-files
+# Terminal 2: Alice joins shared collaboration
+./target/release/syncpair config --file alice-config.yaml
 
-# Terminal 3: Bob joins the same "documents" collaboration  
-./target/release/syncpair client --server http://localhost:8080 --dir ./bob-files
+# Terminal 3: Bob joins same shared collaboration  
+./target/release/syncpair config --file bob-config.yaml
 
 # Now Alice and Bob collaborate in real-time:
 # - When Alice adds a file, Bob sees it instantly
@@ -332,129 +506,50 @@ cargo clippy                   # Linting
 # - Deletions propagate between both collaborators
 ```
 
-## Shared Directory Collaboration
-
-SyncPair now supports **real-time collaborative file synchronization** where multiple clients can work together on shared directories.
-
-### Collaboration Configuration
-
-Create a YAML configuration file to join shared directories:
+### Mixed Shared/Private Configuration Example
 
 ```yaml
-# Alice's configuration (alice-config.yaml)
+# alice-config.yaml
 client_id: alice
 server: http://localhost:8080
 
 directories:
-  - name: documents           # Shared directory name
-    local_path: ~/alice-docs/ # Alice's local directory
+  # Alice's private workspace
+  - name: personal_notes
+    local_path: ~/alice-private/
     settings:
-      description: "Team documents collaboration"
-      sync_interval: 30
+      description: "Alice's personal files"
+      # shared: false (default - isolated storage)
+      
+  # Shared team directory
+  - name: team_docs
+    local_path: ~/shared-team/
+    settings:
+      description: "Team collaboration space"
+      shared: true  # Shared with other team members
+      sync_interval_seconds: 15
+```
 
-# Bob's configuration (bob-config.yaml)  
+```yaml
+# bob-config.yaml  
 client_id: bob
 server: http://localhost:8080
 
 directories:
-  - name: documents           # Same shared directory name  
-    local_path: ~/bob-docs/   # Bob's local directory
+  # Bob's private workspace (different from Alice's)
+  - name: personal_workspace
+    local_path: ~/bob-private/
     settings:
-      description: "Team documents collaboration"
-      sync_interval: 30
-```
-
-### Running Collaborative Clients
-
-```bash
-# Start collaborative sync using configuration files
-./target/release/syncpair config --file alice-config.yaml  # Alice joins
-./target/release/syncpair config --file bob-config.yaml    # Bob joins
-
-# With custom logging for team coordination
-./target/release/syncpair --log-level info config --file alice-config.yaml
-```
-
-### Shared Directory Server Architecture
-
-The server provides **shared directory storage** for real-time collaboration:
-
-- **Shared Namespace**: Multiple clients can sync to the same directory name (e.g., "documents") 
-- **Real-time Updates**: Changes from any client immediately appear for all others in the same directory
-- **Independent Directories**: Different shared directories ("documents", "projects") operate independently
-- **Concurrent Support**: Unlimited clients can collaborate simultaneously without interference
-
-#### Server Storage Structure
-```
-server_storage/
-├── documents/                  # Shared by Alice, Bob, and any other clients
-│   ├── team_report.docx       # Modified by Alice, visible to Bob
-│   ├── project_notes.txt      # Added by Bob, visible to Alice  
-│   ├── shared_spreadsheet.xlsx
-│   └── server_state.json      # Tracks shared directory state
-├── projects/                   # Different shared directory
-│   ├── main.rs                # Shared development files
-│   ├── README.md              
-│   └── server_state.json
-└── default/                    # Backward compatibility for legacy clients
-    └── server_state.json
-```
-
-### Benefits of Shared Directory Collaboration
-
-- **Real-time Teamwork**: Multiple people can work on the same files simultaneously
-- **Instant Synchronization**: Changes appear immediately across all collaborating clients
-- **Automatic Conflict Resolution**: No manual intervention needed when team members modify the same files
-- **Scalable Architecture**: Server efficiently handles many collaborators per directory
-- **Flexible Participation**: Team members can join and leave shared directories at any time
-- **Backward Compatibility**: Existing single-client usage continues working seamlessly
-
-### Use Cases
-
-#### Team Document Collaboration
-```yaml
-# Team member Alice
-client_id: alice_laptop
-server: http://team-server:8080
-
-directories:
-  - name: team_documents      # Shared team workspace
-    local_path: ~/team-docs/
+      description: "Bob's personal files"
+      # shared: false (default - isolated storage)
+      
+  # Same shared team directory
+  - name: team_docs
+    local_path: ~/team-collab/
     settings:
-      sync_interval: 15       # Fast sync for active collaboration
-
-# Team member Bob  
-client_id: bob_desktop
-server: http://team-server:8080
-
-directories:
-  - name: team_documents      # Same shared workspace
-    local_path: ~/work/docs/
-    settings:
-      sync_interval: 15       # Fast sync for active collaboration
-```
-
-#### Development Team Code Sharing
-```yaml
-# Developer 1
-client_id: dev_alice
-server: http://dev-server:8080
-
-directories:
-  - name: shared_codebase     # Shared development directory
-    local_path: ~/projects/team-app/
-    settings:
-      sync_interval: 10       # Very fast sync for code changes
-
-# Developer 2
-client_id: dev_bob  
-server: http://dev-server:8080
-
-directories:
-  - name: shared_codebase     # Same shared codebase
-    local_path: ~/dev/team-app/
-    settings:
-      sync_interval: 10       # Very fast sync for code changes
+      description: "Team collaboration space"
+      shared: true  # Collaborates with Alice and others
+      sync_interval_seconds: 15
 ```
 
 ## Current Capabilities

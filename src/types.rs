@@ -50,6 +50,8 @@ pub struct DirectorySettings {
     pub enabled: bool,
     #[serde(default)]
     pub ignore_patterns: Vec<String>,
+    #[serde(default)]
+    pub shared: bool,
 }
 
 impl Default for DirectorySettings {
@@ -59,6 +61,7 @@ impl Default for DirectorySettings {
             sync_interval_seconds: default_sync_interval(),
             enabled: default_true(),
             ignore_patterns: Vec::new(),
+            shared: false,
         }
     }
 }
