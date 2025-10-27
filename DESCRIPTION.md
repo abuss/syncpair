@@ -1,85 +1,91 @@
-# SyncPair - Advanced File Synchronization Tool
+# SyncPair - Collaborative File Synchronization Tool
 
-SyncPair is a professional-grade, bidirectional file synchronization tool written in Rust. It enables automatic synchronization of files between multiple client directories and a central server using real-time filesystem monitoring, intelligent conflict resolution, and comprehensive logging.
+SyncPair is a professional-grade, real-time collaborative file synchronization tool written in Rust. It enables automatic synchronization and teamwork through **shared directory storage**, where multiple clients can work together on the same directories with instant bidirectional synchronization, intelligent conflict resolution, and seamless collaboration features.
 
 ## Key Features
 
-- **Bidirectional Synchronization**: Full two-way sync between multiple clients through central server
-- **Intelligent Conflict Resolution**: Timestamp-based automatic conflict resolution (newer files win)
-- **Deletion Synchronization**: File deletions propagate between all clients with timestamp tracking
-- **Connection Resilience**: Automatic retry with exponential backoff when server unavailable (5 attempts)
-- **Professional Logging**: Comprehensive logging system with multiple verbosity levels and file output
-- **Real-Time Monitoring**: Uses filesystem watchers to detect changes immediately
-- **Hash-Based Verification**: SHA-256 hashes ensure file integrity during all transfers
-- **Unified Binary**: Single executable with `server` and `client` subcommands
-- **Async Communication**: Built with Tokio for high-performance async I/O
-- **Path Preservation**: Maintains relative directory structure across all clients
+- **Real-time Collaboration**: Multiple clients can work together on shared directories with instant synchronization
+- **Shared Directory Storage**: Teams can collaborate on the same directory namespace with immediate change propagation  
+- **Intelligent Conflict Resolution**: Timestamp-based automatic conflict resolution (newer files win) across all collaborators
+- **Deletion Synchronization**: File deletions propagate between all team members with timestamp tracking
+- **Connection Resilience**: Automatic retry with exponential backoff and 30-second HTTP timeouts when server unavailable (5 attempts)
+- **Professional Logging**: Comprehensive logging system with multiple verbosity levels and file output for team coordination
+- **Real-Time Monitoring**: Uses filesystem watchers to detect changes immediately and sync to all collaborators
+- **Hash-Based Verification**: SHA-256 hashes ensure file integrity during all transfers across the team
+- **Unified Binary**: Single executable with `server` and `client` subcommands for easy team deployment
+- **Async Communication**: Built with Tokio for high-performance async I/O supporting concurrent collaborators
+- **Path Preservation**: Maintains relative directory structure across all collaborating clients
 
 ## Architecture
 
-The system uses an advanced bidirectional synchronization model:
+The system uses a **shared directory collaboration model** for real-time teamwork:
 
-1. **Server Mode**: HTTP server with REST API for sync coordination, uploads, downloads, and deletions
-2. **Client Mode**: Intelligent filesystem watcher with conflict resolution and resilient connection handling
-3. **Sync Protocol**: RESTful API with comprehensive sync negotiation and atomic operations
+1. **Server Mode**: HTTP server with shared directory storage - each directory (e.g., "documents") is accessible to all team members
+2. **Client Mode**: Intelligent filesystem watcher that syncs to shared directories, enabling instant collaboration between team members
+3. **Collaboration Protocol**: RESTful API with comprehensive sync negotiation and atomic operations for team coordination
 
-Files are verified using SHA-256 hashes, conflicts are resolved using modification timestamps, and deletions are tracked with timestamps to prevent resurrection of deleted files.
+Files are verified using SHA-256 hashes, conflicts are resolved using modification timestamps across all collaborators, and deletions are tracked with timestamps to prevent resurrection of deleted files. The server now includes deadlock-free operation for handling multiple concurrent team members safely.
 
 ## Usage
 
 ```bash
-# Production Server (with professional logging)
+# Production Server (supporting team collaboration)
 ./syncpair --quiet --log-file /var/log/syncpair-server.log \
-    server --port 8080 --storage-dir /data/syncpair
+    server --port 8080 --storage-dir /data/team-syncpair
 
-# Production Client (quiet mode with error logging)
-./syncpair --quiet --log-file /var/log/syncpair-client.log \
-    client --server http://sync-server:8080 --dir /home/user/documents
+# Team Member 1 (Alice joining shared "documents" directory)
+./syncpair --quiet --log-file /var/log/syncpair-alice.log \
+    client --server http://sync-server:8080 --dir /home/alice/team-documents
 
-# Development with debug logging
-./syncpair --log-level debug server --port 8080 --storage-dir ./test-server
-./syncpair --log-level debug client --server http://localhost:8080 --dir ./test-client
+# Team Member 2 (Bob joining same shared "documents" directory)  
+./syncpair --quiet --log-file /var/log/syncpair-bob.log \
+    client --server http://sync-server:8080 --dir /home/bob/team-documents
+
+# Development with debug logging for team coordination
+./syncpair --log-level debug server --port 8080 --storage-dir ./team-server
+./syncpair --log-level debug client --server http://localhost:8080 --dir ./alice-workspace
 ```
 
-## Advanced Capabilities
+## Advanced Collaboration Capabilities
 
-### Multi-Client Synchronization
-- Multiple clients can connect to the same server
-- All changes (files and deletions) sync bidirectionally between clients
-- Automatic conflict resolution prevents sync conflicts
-- Each client maintains independent state and operates autonomously
+### Multi-Team Synchronization
+- Multiple teams can use different shared directories on the same server
+- All changes (files and deletions) sync bidirectionally between all team members in real-time
+- Automatic conflict resolution prevents sync conflicts during active collaboration
+- Each team member maintains independent state and operates autonomously
 
 ### Connection Resilience
-- Clients automatically retry failed connections (1s, 2s, 4s, 8s, 16s delays)
-- Graceful handling of temporary network outages
-- Automatic recovery when server becomes available
-- No data loss during connection interruptions
+- Team members automatically retry failed connections (1s, 2s, 4s, 8s, 16s delays)
+- Graceful handling of temporary network outages during team collaboration
+- Automatic recovery when server becomes available without losing team synchronization
+- No data loss during connection interruptions in collaborative sessions
 
-### Professional Logging
-- Multiple log levels: error, warn, info, debug, trace
-- File and console output options
-- Quiet mode for production deployments
-- Structured logging with timestamps and component attribution
+### Professional Team Logging
+- Multiple log levels: error, warn, info, debug, trace for team coordination
+- File and console output options for team monitoring
+- Quiet mode for production team deployments
+- Structured logging with timestamps and component attribution for team debugging
 
 ## Implementation Details
 
-- **Language**: Rust (async/await with Tokio runtime)
-- **Server**: Warp HTTP framework with comprehensive REST API
-- **Client**: notify crate for filesystem watching + intelligent sync engine
-- **Storage**: JSON state files with atomic writes for reliability
-- **Communication**: HTTP with JSON payloads for all sync operations
-- **Conflict Resolution**: Timestamp-based automatic resolution system
-- **State Management**: Comprehensive tracking of files and deletions with timestamps
+- **Language**: Rust (async/await with Tokio runtime) for high-performance team collaboration
+- **Server**: Warp HTTP framework with comprehensive REST API and deadlock-free concurrent client handling
+- **Client**: notify crate for filesystem watching + intelligent sync engine optimized for team collaboration
+- **Storage**: JSON state files with atomic writes for reliability in team environments
+- **Communication**: HTTP with JSON payloads and 30-second timeouts for all team sync operations  
+- **Conflict Resolution**: Timestamp-based automatic resolution system for seamless team collaboration
+- **State Management**: Comprehensive tracking of files and deletions with timestamps across all team members
 
-This advanced design provides enterprise-grade reliability, performance, and operational visibility for professional file synchronization deployments.
+This advanced design provides enterprise-grade reliability, performance, and operational visibility for professional team file synchronization and collaboration deployments.
 
-## Production Ready
+## Production Ready for Teams
 
-SyncPair is designed for production use with:
-- Comprehensive error handling and recovery
-- Professional logging suitable for monitoring and debugging
-- Atomic operations to prevent data corruption
-- Efficient bandwidth usage (only changed files transfer)
-- Cross-platform compatibility (Linux, macOS, Windows)
-- Low resource usage suitable for embedded devices
+SyncPair is designed for production team use with:
+- Comprehensive error handling and recovery for collaborative environments
+- Professional logging suitable for team monitoring and debugging
+- Atomic operations to prevent data corruption during team collaboration
+- Efficient bandwidth usage (only changed files transfer) optimized for team workflows
+- Cross-platform compatibility (Linux, macOS, Windows) supporting diverse team environments
+- Low resource usage suitable for team deployment on various devices
+- **Deadlock-free server operation** ensuring reliable service for concurrent team members
 

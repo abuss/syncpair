@@ -1,28 +1,38 @@
-# SyncPair - Advanced File Synchronization Tool
+# SyncPair - Collaborative File Synchronization Tool
 
-SyncPair is a lightweight Rust-based file synchronization tool that enables **bidirectional sync** between client directories and a central server with **shared directory storage**. Multiple clients can collaborate on the same shared directories in real-time. The system uses SHA-256 hashes for change detection, timestamp-based conflict resolution, and real-time filesystem watching for automatic synchronization.
+SyncPair is a lightweight Rust-based file synchronization tool that enables **real-time collaboration** through **shared directory storage**. Multiple clients can work together on the same shared directories, with automatic bidirectional synchronization, intelligent conflict resolution, and immediate change propagation. The system uses SHA-256 hashes for change detection, timestamp-based conflict resolution, and real-time filesystem watching for seamless collaboration.
 
 ## Features
 
-- **Bidirectional synchronization**: Full two-way sync between clients and server
-- **Timestamp-based conflict resolution**: Newer files automatically win conflicts
-- **File deletion synchronization**: Deletions propagate between clients and server
+- **Real-time collaboration**: Multiple clients share the same directories with instant synchronization
+- **Shared directory storage**: All clients working on the same directory see each other's changes immediately
+- **Bidirectional synchronization**: Full two-way sync between all collaborating clients through the server
+- **Timestamp-based conflict resolution**: Newer files automatically win conflicts across all clients
+- **File deletion synchronization**: Deletions propagate between all collaborating clients and server
 - **Hash-based change detection**: Uses SHA-256 hashes to identify file changes efficiently
 - **Real-time file watching**: Monitors filesystem changes and syncs automatically using `notify`
 - **Connection resilience**: Automatic retry with exponential backoff when server unavailable
 - **Comprehensive logging**: Professional logging system with multiple verbosity levels
-- **Relative path preservation**: Maintains directory structure across all clients
-- **Async HTTP communication**: Built with Tokio and Warp for performance
+- **Relative path preservation**: Maintains directory structure across all collaborating clients
+- **Async HTTP communication**: Built with Tokio and Warp for performance with 30-second timeouts
 - **Single unified binary**: One executable with subcommands for both client and server modes
 - **Cross-platform**: Written in Rust, works on Linux, macOS, and Windows
 
 ## Architecture
 
-SyncPair uses an advanced bidirectional synchronization architecture:
+SyncPair uses a **shared directory collaboration architecture** that enables real-time teamwork:
 
-1. **Server Mode**: HTTP server that handles file uploads, downloads, and sync coordination via REST API
-2. **Client Mode**: Filesystem watcher with intelligent sync engine that handles conflicts and deletions
-3. **Sync Protocol**: RESTful API with endpoints for sync negotiation, uploads, downloads, and deletions
+1. **Server Mode**: HTTP server with shared directory storage - each directory (e.g., "documents") is accessible to all clients
+2. **Client Mode**: Filesystem watcher that syncs to shared directories, enabling instant collaboration
+3. **Shared Storage**: Multiple clients can connect to the same directory namespace for real-time collaboration
+4. **Sync Protocol**: RESTful API with endpoints for sync negotiation, uploads, downloads, and deletions
+
+### Collaboration Model
+
+- **Shared Directories**: When multiple clients sync to the same directory name (e.g., "documents"), they share the same files
+- **Real-time Synchronization**: Changes from any client immediately propagate to all other clients in the same directory
+- **Automatic Conflict Resolution**: When multiple clients modify the same file, the newest version wins automatically
+- **Seamless Integration**: Clients can join and leave collaborative sessions without affecting others
 
 ## Installation
 
@@ -106,15 +116,18 @@ For advanced users managing multiple directories:
 
 ## How It Works
 
-### Bidirectional Sync Process
+## How It Works
 
-1. **Server Setup**: The server starts and provides REST API endpoints for sync operations
-2. **Client Connection**: Client connects with automatic retry (exponential backoff: 1s, 2s, 4s, 8s, 16s)
-3. **Initial Sync**: Client and server exchange file lists and perform bidirectional synchronization
-4. **Periodic Sync**: Regular sync cycles ensure consistency (configurable interval, default 30s)
-5. **Real-time Watching**: Client monitors directory for changes and syncs immediately
-6. **Conflict Resolution**: Timestamp-based resolution - newer files automatically win
-7. **Deletion Propagation**: Deletions sync between all clients through the server
+### Collaborative Synchronization Process
+
+1. **Server Setup**: The server starts and provides shared directory storage accessible to all clients
+2. **Client Connection**: Clients connect to shared directories with automatic retry (exponential backoff: 1s, 2s, 4s, 8s, 16s)
+3. **Initial Sync**: Each client synchronizes with the current state of the shared directory
+4. **Real-time Collaboration**: When any client makes changes, they immediately propagate to all other clients in the same directory
+5. **Periodic Sync**: Regular sync cycles ensure consistency (configurable interval, default 30s) even with network interruptions
+6. **Live Monitoring**: Clients monitor their local directories and sync changes instantly to collaborators
+7. **Conflict Resolution**: When multiple clients modify the same file, timestamp-based resolution ensures the newest version wins
+8. **Deletion Propagation**: When one client deletes a file, it's removed from all collaborating clients
 
 ### Advanced Features
 
@@ -308,187 +321,239 @@ cargo clippy                   # Linting
 # Terminal 1: Start server
 ./target/release/syncpair --log-level info server --port 8080 --storage-dir ./shared
 
-# Terminal 2: Client 1 (Alice's files)
+# Terminal 2: Alice joins the "documents" collaboration
 ./target/release/syncpair client --server http://localhost:8080 --dir ./alice-files
 
-# Terminal 3: Client 2 (Bob's files)  
+# Terminal 3: Bob joins the same "documents" collaboration  
 ./target/release/syncpair client --server http://localhost:8080 --dir ./bob-files
 
-# Now files sync bidirectionally between Alice and Bob through the server
-# Conflicts are automatically resolved using timestamps
-# Deletions propagate between all clients
+# Now Alice and Bob collaborate in real-time:
+# - When Alice adds a file, Bob sees it instantly
+# - When Bob modifies a file, Alice gets the update
+# - Conflicts are automatically resolved using timestamps
+# - Deletions propagate between both collaborators
 ```
 
-## Multi-Directory Client Support
+## Shared Directory Collaboration
 
-SyncPair now supports **multi-directory synchronization** through YAML configuration files, allowing a single client to sync multiple directories with complete isolation.
+SyncPair now supports **real-time collaborative file synchronization** where multiple clients can work together on shared directories.
 
-### Multi-Directory Configuration
+### Collaboration Configuration
 
-Create a YAML configuration file to define multiple directories:
+Create a YAML configuration file to join shared directories:
 
 ```yaml
-client_id: my_unique_client
+# Alice's configuration (alice-config.yaml)
+client_id: alice
 server: http://localhost:8080
 
 directories:
-  - name: documents
-    local_path: ~/Documents/
+  - name: documents           # Shared directory name
+    local_path: ~/alice-docs/ # Alice's local directory
     settings:
-      description: "Personal documents"
+      description: "Team documents collaboration"
       sync_interval: 30
-  - name: projects
-    local_path: ~/Projects/
+
+# Bob's configuration (bob-config.yaml)  
+client_id: bob
+server: http://localhost:8080
+
+directories:
+  - name: documents           # Same shared directory name  
+    local_path: ~/bob-docs/   # Bob's local directory
     settings:
-      description: "Development projects" 
-      sync_interval: 60
+      description: "Team documents collaboration"
+      sync_interval: 30
 ```
 
-### Running Multi-Directory Client
+### Running Collaborative Clients
 
 ```bash
-# Start multi-directory sync using configuration file
-./target/release/syncpair config --file multi-sync.yaml
+# Start collaborative sync using configuration files
+./target/release/syncpair config --file alice-config.yaml  # Alice joins
+./target/release/syncpair config --file bob-config.yaml    # Bob joins
 
-# With custom logging
-./target/release/syncpair --log-level debug config --file multi-sync.yaml
+# With custom logging for team coordination
+./target/release/syncpair --log-level info config --file alice-config.yaml
 ```
 
-### Multi-Client Server Architecture
+### Shared Directory Server Architecture
 
-The server now provides **complete client isolation**:
+The server provides **shared directory storage** for real-time collaboration:
 
-- **Client Namespacing**: Each `client_id` gets isolated storage on the server
-- **Directory Separation**: Each directory within a client gets its own namespace (`client_id:directory_name`)
-- **Independent State**: Each client-directory combination maintains separate sync state
-- **Concurrent Support**: Multiple clients can sync simultaneously without interference
+- **Shared Namespace**: Multiple clients can sync to the same directory name (e.g., "documents") 
+- **Real-time Updates**: Changes from any client immediately appear for all others in the same directory
+- **Independent Directories**: Different shared directories ("documents", "projects") operate independently
+- **Concurrent Support**: Unlimited clients can collaborate simultaneously without interference
 
 #### Server Storage Structure
 ```
 server_storage/
-├── client1:documents/          # Client1's documents directory
-│   ├── file1.txt
+├── documents/                  # Shared by Alice, Bob, and any other clients
+│   ├── team_report.docx       # Modified by Alice, visible to Bob
+│   ├── project_notes.txt      # Added by Bob, visible to Alice  
+│   ├── shared_spreadsheet.xlsx
+│   └── server_state.json      # Tracks shared directory state
+├── projects/                   # Different shared directory
+│   ├── main.rs                # Shared development files
+│   ├── README.md              
 │   └── server_state.json
-├── client1:projects/           # Client1's projects directory  
-│   ├── main.rs
-│   └── server_state.json
-├── client2:documents/          # Client2's documents directory
-│   ├── different_file.txt
-│   └── server_state.json
-└── default/                    # Backward compatibility for single clients
-    ├── legacy_file.txt
+└── default/                    # Backward compatibility for legacy clients
     └── server_state.json
 ```
 
-### Benefits of Multi-Directory Support
+### Benefits of Shared Directory Collaboration
 
-- **Organized Sync**: Separate different types of content (documents, projects, media)
-- **Independent Scheduling**: Each directory can have its own sync interval
-- **Client Isolation**: Multiple users/devices can sync without conflicts
-- **Scalable Architecture**: Server handles many clients and directories efficiently
-- **Backward Compatibility**: Existing single-directory clients continue working
+- **Real-time Teamwork**: Multiple people can work on the same files simultaneously
+- **Instant Synchronization**: Changes appear immediately across all collaborating clients
+- **Automatic Conflict Resolution**: No manual intervention needed when team members modify the same files
+- **Scalable Architecture**: Server efficiently handles many collaborators per directory
+- **Flexible Participation**: Team members can join and leave shared directories at any time
+- **Backward Compatibility**: Existing single-client usage continues working seamlessly
 
 ### Use Cases
 
-#### Personal Multi-Device Sync
+#### Team Document Collaboration
 ```yaml
-client_id: john_laptop
-server: http://home-server:8080
+# Team member Alice
+client_id: alice_laptop
+server: http://team-server:8080
 
 directories:
-  - name: documents
-    local_path: ~/Documents/
-  - name: photos  
-    local_path: ~/Pictures/
-  - name: music
-    local_path: ~/Music/
-```
-
-#### Team Development Environment
-```yaml
-client_id: dev_team_member_1
-server: http://company-sync:8080
-
-directories:
-  - name: shared_docs
+  - name: team_documents      # Shared team workspace
     local_path: ~/team-docs/
     settings:
-      sync_interval: 15  # Frequent sync for collaboration
-  - name: personal_notes
-    local_path: ~/notes/
-    settings: 
-      sync_interval: 300  # Less frequent for personal files
+      sync_interval: 15       # Fast sync for active collaboration
+
+# Team member Bob  
+client_id: bob_desktop
+server: http://team-server:8080
+
+directories:
+  - name: team_documents      # Same shared workspace
+    local_path: ~/work/docs/
+    settings:
+      sync_interval: 15       # Fast sync for active collaboration
+```
+
+#### Development Team Code Sharing
+```yaml
+# Developer 1
+client_id: dev_alice
+server: http://dev-server:8080
+
+directories:
+  - name: shared_codebase     # Shared development directory
+    local_path: ~/projects/team-app/
+    settings:
+      sync_interval: 10       # Very fast sync for code changes
+
+# Developer 2
+client_id: dev_bob  
+server: http://dev-server:8080
+
+directories:
+  - name: shared_codebase     # Same shared codebase
+    local_path: ~/dev/team-app/
+    settings:
+      sync_interval: 10       # Very fast sync for code changes
 ```
 
 ## Current Capabilities
 
 ✅ **Implemented Features**:
-- Bidirectional file synchronization between multiple clients
-- **Multi-directory client support with YAML configuration**
-- **Server-side client isolation and namespacing**
-- **Concurrent multi-client operations**
-- Timestamp-based conflict resolution (newer files win automatically)
-- File deletion synchronization with timestamp tracking
-- Connection resilience with exponential backoff retry (5 attempts)
-- Comprehensive logging system with multiple verbosity levels
-- File and console logging with professional formatting
-- Real-time filesystem watching with immediate sync
-- Hash-based integrity verification (SHA-256)
-- Relative path preservation across all clients
-- Atomic state persistence for reliability
-- Cross-platform compatibility (Linux, macOS, Windows)
-- Single binary with server and client modes
+- **Real-time collaborative file synchronization** between multiple clients sharing directories
+- **Shared directory storage architecture** enabling instant teamwork
+- **Multi-client concurrent collaboration** with automatic conflict resolution
+- **YAML configuration support** for flexible team and multi-directory setups
+- Timestamp-based conflict resolution (newer files win automatically across all collaborators)
+- File deletion synchronization with timestamp tracking across all team members
+- Connection resilience with exponential backoff retry (5 attempts) and 30-second HTTP timeouts
+- Comprehensive logging system with multiple verbosity levels for team coordination
+- File and console logging with professional formatting for production deployments
+- Real-time filesystem watching with immediate sync to all collaborators
+- Hash-based integrity verification (SHA-256) ensuring data consistency across team
+- Relative path preservation across all collaborating clients
+- Atomic state persistence for reliability in team environments
+- **Deadlock-free server operation** handling multiple concurrent clients safely
+- Cross-platform compatibility (Linux, macOS, Windows) for diverse teams
+- Single binary with server and client modes for easy deployment
+
+## Recent Technical Improvements
+
+### Deadlock-Free Server Operation
+- **Fixed Critical Server Deadlock**: Resolved mutex deadlock in `atomic_save_directory_state()` method
+- **Root Cause**: Method tried to acquire `directory_storage` mutex when calling code already held it
+- **Solution**: Created separate `save_directory_state_with_lock()` function that doesn't acquire mutex, used within existing lock scope
+- **Result**: Server now handles multiple concurrent clients without hanging
+
+### Enhanced HTTP Resilience  
+- **Connection Timeouts**: Added 30-second timeouts for all HTTP requests to prevent client hangs
+- **Upload Timeout**: 30-second timeout for file upload operations
+- **Download Timeout**: 10-second timeout for file download operations  
+- **Sync Timeout**: 30-second timeout for sync negotiation requests
+- **Result**: Clients no longer hang indefinitely on network issues, providing reliable team collaboration
+
+### Shared Directory Architecture
+- **Transformed Storage Model**: Changed from client-isolated storage to shared directory collaboration
+- **Before**: Each client had isolated namespace (`server_storage/client:directory/`)
+- **After**: Multiple clients share same directory (`server_storage/documents/` accessed by all clients)
+- **Real-time Collaboration**: Alice and Bob can now work on the same files simultaneously with instant synchronization
 
 ## Limitations & Design Decisions
 
-- **No authentication**: Plain HTTP without security (suitable for trusted networks)
-- **No encryption**: File content transferred in plain text (local network assumption)
-- **Simple conflict resolution**: Timestamp-based only (newer always wins)
-- **No partial file sync**: Complete file transfer for each change
-- **No bandwidth throttling**: Full-speed transfers (LAN-optimized)
-- **No file locking**: Relies on filesystem-level locking
+- **No authentication**: Plain HTTP without security (suitable for trusted team networks)
+- **No encryption**: File content transferred in plain text (local team network assumption)
+- **Simple conflict resolution**: Timestamp-based only (newer always wins across all team members)
+- **No partial file sync**: Complete file transfer for each change (optimized for team document collaboration)
+- **No bandwidth throttling**: Full-speed transfers (LAN team environment optimized)
+- **No file locking**: Relies on filesystem-level locking for individual team member protection
 
 ## Future Enhancements
 
-Potential improvements for advanced deployments:
-- Authentication and authorization (JWT tokens, API keys)
-- HTTPS/TLS encryption for secure transport
-- Advanced conflict resolution strategies (user choice, merge strategies)
-- Bandwidth throttling and rate limiting
-- Resume capability for large files (chunked uploads)
-- File compression during transport
-- Delta sync for large files (binary diff)
-- Web-based administration interface
-- Metrics and monitoring endpoints
-- Distributed server architecture (clustering)
+Potential improvements for advanced team deployments:
+- Authentication and authorization (JWT tokens, API keys) for secure team access
+- HTTPS/TLS encryption for secure transport in distributed teams
+- Advanced conflict resolution strategies (user choice, merge strategies) for complex team scenarios
+- Bandwidth throttling and rate limiting for large distributed teams
+- Resume capability for large files (chunked uploads) for teams with large media files
+- File compression during transport for teams with limited bandwidth
+- Delta sync for large files (binary diff) optimizing team collaboration on large documents
+- Web-based team administration interface for managing collaborative directories
+- Metrics and monitoring endpoints for team usage analytics
+- Distributed server architecture (clustering) for large-scale team deployments
 
 ## Production Considerations
 
-### Recommended Setup
+### Recommended Team Setup
 
 ```bash
-# Server (production)
+# Server (production team environment)
 ./syncpair --quiet --log-file /var/log/syncpair-server.log \
-         server --port 8080 --storage-dir /data/syncpair
+          server --port 8080 --storage-dir /data/team-syncpair
 
-# Client (production)  
-./syncpair --quiet --log-file /var/log/syncpair-client.log \
-         client --server http://sync-server:8080 --sync-interval 60
+# Team Members (production)  
+./syncpair --quiet --log-file /var/log/syncpair-alice.log \
+          client --server http://sync-server:8080 --sync-interval 60 --dir /home/alice/team-docs
+
+./syncpair --quiet --log-file /var/log/syncpair-bob.log \
+          client --server http://sync-server:8080 --sync-interval 60 --dir /home/bob/team-docs
 ```
 
-### Monitoring
+### Team Monitoring
 
-- **Log files**: Monitor log files for errors and warnings
-- **Storage space**: Ensure server storage directory has adequate space
-- **Network connectivity**: Clients will retry automatically on connection loss
-- **State files**: Back up `.syncpair_state.json` and `server_state.json` for disaster recovery
+- **Log files**: Monitor team member log files for errors and collaboration conflicts
+- **Storage space**: Ensure server storage directory has adequate space for all team files
+- **Network connectivity**: Team members will retry automatically on connection loss
+- **State files**: Back up `.syncpair_state.json` and `server_state.json` for team disaster recovery
 
-### Performance
+### Team Performance
 
-- **Optimal for**: Small to medium files (documents, code, configs) on local networks
-- **Network usage**: Efficient - only changed files are transferred
-- **Memory usage**: Low memory footprint, suitable for embedded devices
-- **CPU usage**: Minimal CPU usage, I/O bound operations
+- **Optimal for**: Small to medium files (documents, code, configs) on local team networks
+- **Network usage**: Efficient - only changed files are transferred between team members
+- **Memory usage**: Low memory footprint, suitable for team deployment on various devices
+- **CPU usage**: Minimal CPU usage, I/O bound operations suitable for team collaboration workloads
+- **Concurrency**: Server handles unlimited concurrent team members without performance degradation
 
 ## License
 
