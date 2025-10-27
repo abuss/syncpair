@@ -1,0 +1,12 @@
+client_id: test_directory_isolation
+server: http://localhost:8080
+
+directories:
+  - name: workspace_a
+    local_path: test_dir_a/
+    settings:
+      description: "Test workspace A"
+  - name: workspace_b
+    local_path: test_dir_b/
+    settings:
+      description: "Test workspace B"

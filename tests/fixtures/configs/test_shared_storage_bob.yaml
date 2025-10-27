@@ -1,0 +1,7 @@
+client_id: "bob"
+server: "http://127.0.0.1:8080"
+directories:
+  - name: "documents"
+    local_path: "./test_bob_docs/"
+    settings:
+      description: "Shared documents directory"

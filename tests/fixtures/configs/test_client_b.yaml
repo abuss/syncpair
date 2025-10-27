@@ -1,0 +1,8 @@
+client_id: client_b
+server: http://localhost:8080
+
+directories:
+  - name: shared_workspace
+    local_path: test_client_b_shared/
+    settings:
+      description: "Client B's shared workspace"

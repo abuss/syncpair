@@ -1,0 +1,16 @@
+client_id: demo2
+server: http://localhost:8080
+
+directories:
+  - name: demo2
+    local_path: test_demo2_local/
+    settings:
+      description: "Test directory for demo2"
+  - name: nix-config
+    local_path: test_work2_local/
+    settings:
+      description: "Shared Nix config"
+      shared: true
+      ignore_patterns:
+        - "*.tmp"
+        - "*.log"
