@@ -116,8 +116,6 @@ For advanced users managing multiple directories:
 
 ## How It Works
 
-## How It Works
-
 ### Collaborative Synchronization Process
 
 1. **Server Setup**: The server starts and provides shared directory storage accessible to all clients

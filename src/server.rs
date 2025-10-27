@@ -182,21 +182,7 @@ impl SimpleServer {
         Ok(())
     }
 
-    // Helper function to extract directory name from client_id or use default
-    fn extract_directory_name(&self, client_id: Option<&str>) -> String {
-        match client_id {
-            Some(id) => {
-                // Extract directory name from client_id format: "client_name:directory_name"
-                if let Some((_client, directory)) = id.split_once(':') {
-                    directory.to_string()
-                } else {
-                    // If no colon, treat the whole thing as directory name
-                    id.to_string()
-                }
-            }
-            None => "default".to_string(),
-        }
-    }
+
 
     fn get_directory_storage_dir(&self, directory_name: &str) -> PathBuf {
         self.base_storage_dir.join(directory_name)
@@ -285,6 +271,10 @@ impl SimpleServer {
             }
             
             let (directory_files, directory_deleted_files) = directory_storage.get_mut(&directory_name).unwrap();
+            
+            // Clean up old deletion records (older than 7 days) to prevent unlimited growth
+            let cutoff_time = chrono::Utc::now() - chrono::Duration::days(7);
+            directory_deleted_files.retain(|_, deletion_time| *deletion_time > cutoff_time);
             
             let client_files = sync_req.files;
             let client_deleted_files = sync_req.deleted_files;
@@ -425,15 +415,20 @@ impl SimpleServer {
     }
 
     async fn handle_download(&self, file_path: String, directory_name: String) -> Result<DownloadResponse> {
+        // URL decode the file path since the client URL-encodes it
+        let decoded_file_path = urlencoding::decode(&file_path)
+            .map_err(|e| anyhow::anyhow!("Failed to decode file path '{}': {}", file_path, e))?
+            .into_owned();
+            
         let directory_storage_dir = self.get_directory_storage_dir(&directory_name);
-        let full_file_path = directory_storage_dir.join(&file_path);
+        let full_file_path = directory_storage_dir.join(&decoded_file_path);
         
         if !full_file_path.exists() {
             return Ok(DownloadResponse {
                 success: false,
                 file_info: None,
                 content: None,
-                message: format!("File not found in directory '{}': {}", directory_name, file_path),
+                message: format!("File not found in directory '{}': {}", directory_name, decoded_file_path),
             });
         }
         
@@ -443,13 +438,13 @@ impl SimpleServer {
         let modified = metadata.modified()?.into();
         
         let file_info = FileInfo {
-            path: file_path.clone(),
+            path: decoded_file_path.clone(),
             hash: file_hash,
             size: metadata.len(),
             modified,
         };
         
-        info!("📁 Downloaded from directory '{}': {}", directory_name, file_path);
+        info!("📁 Downloaded from directory '{}': {}", directory_name, decoded_file_path);
         
         Ok(DownloadResponse {
             success: true,
@@ -528,8 +523,8 @@ impl SimpleServer {
     // Helper methods for directory storage management
     fn save_all_states(&self) -> Result<()> {
         let directory_storage = self.directory_storage.lock().unwrap();
-        for directory_name in directory_storage.keys() {
-            if let Err(e) = self.atomic_save_directory_state(directory_name) {
+        for (directory_name, (directory_files, directory_deleted_files)) in directory_storage.iter() {
+            if let Err(e) = self.save_directory_state_with_lock(directory_name, directory_files, directory_deleted_files) {
                 warn!("Failed to save state for directory {}: {}", directory_name, e);
             }
         }

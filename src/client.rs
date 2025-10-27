@@ -159,8 +159,9 @@ impl SimpleClient {
             state.files.insert(file_info.path.clone(), file_info);
         }
         
-        // Clear deleted files list after successful sync
-        state.deleted_files.clear();
+        // Only clear old deleted files (older than 24 hours) to ensure proper sync across clients
+        let cutoff_time = chrono::Utc::now() - chrono::Duration::hours(24);
+        state.deleted_files.retain(|_, deletion_time| *deletion_time > cutoff_time);
         
         state.last_sync = chrono::Utc::now();
         save_client_state(&state, &self.state_file)?;
