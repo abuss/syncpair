@@ -6,7 +6,7 @@ use warp::Filter;
 use tracing::{info, warn, error, debug};
 
 use crate::types::{FileInfo, UploadRequest, UploadResponse, SyncRequest, SyncResponse, FileConflict, DownloadResponse, DeleteRequest, DeleteResponse};
-use crate::utils::{calculate_file_hash, load_client_state, save_client_state};
+use crate::utils::{calculate_file_hash, load_client_state_db, save_client_state_db, init_state_database};
 use crate::types::ClientState;
 
 #[derive(Clone)]
@@ -28,9 +28,9 @@ impl SimpleServer {
                 if entry.file_type().map_or(false, |ft| ft.is_dir()) {
                     if let Some(directory_name) = entry.file_name().to_str() {
                         let dir_path = entry.path();
-                        let state_file = dir_path.join("server_state.json");
-                        if state_file.exists() {
-                            match load_client_state(&state_file) {
+                        let state_db = dir_path.join("server_state.db");
+                        if state_db.exists() {
+                            match load_client_state_db(&state_db) {
                                 Ok(state) => {
                                     directory_storage.insert(directory_name.to_string(), (state.files, state.deleted_files));
                                     info!("Loaded state for directory: {}", directory_name);
@@ -47,9 +47,9 @@ impl SimpleServer {
         
         // If no directory storage exists, create default directory for backward compatibility
         if directory_storage.is_empty() {
-            let state_file = storage_dir.join("server_state.json");
-            let (files, deleted_files) = if state_file.exists() {
-                let state = load_client_state(&state_file)?;
+            let state_db = storage_dir.join("server_state.db");
+            let (files, deleted_files) = if state_db.exists() {
+                let state = load_client_state_db(&state_db)?;
                 (state.files, state.deleted_files)
             } else {
                 (HashMap::new(), HashMap::new())
@@ -490,7 +490,12 @@ impl SimpleServer {
 
     fn atomic_save_directory_state(&self, directory_name: &str) -> Result<()> {
         let directory_storage_dir = self.get_directory_storage_dir(directory_name);
-        let state_file = directory_storage_dir.join("server_state.json");
+        let state_db = directory_storage_dir.join("server_state.db");
+        
+        // Initialize the database if it doesn't exist
+        if !state_db.exists() {
+            init_state_database(&state_db)?;
+        }
         
         let directory_storage = self.directory_storage.lock().unwrap();
         if let Some((directory_files, directory_deleted_files)) = directory_storage.get(directory_name) {
@@ -500,7 +505,7 @@ impl SimpleServer {
                 last_sync: chrono::Utc::now(),
             };
             
-            save_client_state(&state, &state_file)?;
+            save_client_state_db(&state, &state_db)?;
         }
         
         Ok(())
@@ -508,7 +513,12 @@ impl SimpleServer {
 
     fn save_directory_state_with_lock(&self, directory_name: &str, directory_files: &HashMap<String, FileInfo>, directory_deleted_files: &HashMap<String, chrono::DateTime<chrono::Utc>>) -> Result<()> {
         let directory_storage_dir = self.get_directory_storage_dir(directory_name);
-        let state_file = directory_storage_dir.join("server_state.json");
+        let state_db = directory_storage_dir.join("server_state.db");
+        
+        // Initialize the database if it doesn't exist
+        if !state_db.exists() {
+            init_state_database(&state_db)?;
+        }
         
         let state = ClientState {
             files: directory_files.clone(),
@@ -516,7 +526,7 @@ impl SimpleServer {
             last_sync: chrono::Utc::now(),
         };
         
-        save_client_state(&state, &state_file)?;
+        save_client_state_db(&state, &state_db)?;
         Ok(())
     }
 

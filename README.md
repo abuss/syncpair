@@ -42,15 +42,15 @@ The `shared` setting determines how directories are stored on the server:
 server_storage/
 ├── alice:personal_notes/          # Alice's private directory (isolated)
 │   ├── personal_diary.txt
-│   └── server_state.json
+│   └── server_state.db            # Database state (was server_state.json)
 ├── bob:personal_workspace/        # Bob's private directory (isolated)
 │   ├── bob_notes.txt
-│   └── server_state.json
+│   └── server_state.db            # Database state (was server_state.json)
 └── team_project/                  # Shared directory (collaborative)
     ├── project_plan.docx          # Visible to both Alice & Bob
     ├── meeting_notes.txt          # Modified by Alice, visible to Bob
     ├── code_review.md             # Added by Bob, visible to Alice
-    └── server_state.json          # Shared state for all collaborators
+    └── server_state.db            # Shared database state for all collaborators
 ```
 
 **Key Differences:**
@@ -317,10 +317,11 @@ When the same file is modified on multiple clients:
 
 ### File States
 
-- **Client State**: Tracks local files and deletion history with `.syncpair_state.json` in the watch directory
-- **Server State**: Maintains synchronized files and global deletion history with `server_state.json`
+- **Client State**: Tracks local files and deletion history with `.syncpair_state.db` database in the watch directory
+- **Server State**: Maintains synchronized files and global deletion history with `server_state.db` database
 - **Change Detection**: Compares file hashes and modification timestamps to determine sync actions
 - **Deletion Tracking**: Timestamp-based deleted file tracking prevents conflicts and resurrection
+- **Database Storage**: Uses embedded DuckDB for better performance, ACID transactions, and query capabilities
 
 ## Logging System
 
@@ -373,7 +374,7 @@ Each log entry includes:
 - **SyncServer**: Advanced HTTP server using Warp framework with comprehensive REST API
 - **SyncClient**: Intelligent filesystem watcher with bidirectional sync, conflict resolution, and retry logic
 - **File Verification**: SHA-256 hash calculation and comparison for integrity
-- **State Management**: JSON-based persistence with atomic writes for reliability
+- **State Management**: DuckDB-based persistence with ACID transactions for reliability
 - **Conflict Resolution**: Timestamp-based automatic conflict resolution system
 - **Connection Management**: Resilient HTTP client with exponential backoff retry logic
 

@@ -9,13 +9,13 @@ use tokio::sync::broadcast;
 use tracing::{info, warn, error, debug};
 
 use crate::types::{FileInfo, UploadRequest, UploadResponse, SyncRequest, SyncResponse, DownloadResponse, DeleteRequest, DeleteResponse};
-use crate::utils::{scan_directory_with_patterns, get_file_info, load_client_state, save_client_state, calculate_file_hash};
+use crate::utils::{scan_directory_with_patterns, get_file_info, load_client_state_db, save_client_state_db, calculate_file_hash};
 
 #[derive(Clone)]
 pub struct SimpleClient {
     server_url: String,
     watch_dir: PathBuf,
-    state_file: PathBuf,
+    state_db: PathBuf,
     http_client: Client,
     sync_interval: Duration,
     client_id: Option<String>,
@@ -25,7 +25,7 @@ pub struct SimpleClient {
 
 impl SimpleClient {
     pub fn new(server_url: String, watch_dir: PathBuf) -> Self {
-        let state_file = watch_dir.join(".syncpair_state.json");
+        let state_db = watch_dir.join(".syncpair_state.db");
         
         // Create HTTP client with timeouts
         let http_client = Client::builder()
@@ -37,7 +37,7 @@ impl SimpleClient {
         Self {
             server_url,
             watch_dir,
-            state_file,
+            state_db,
             http_client,
             sync_interval: Duration::from_secs(30), // Default: sync every 30 seconds
             client_id: None,
@@ -70,7 +70,7 @@ impl SimpleClient {
         info!("Starting bidirectional sync...");
  
         let current_files = scan_directory_with_patterns(&self.watch_dir, &self.exclude_patterns)?;
-        let mut state = load_client_state(&self.state_file)?;
+        let mut state = load_client_state_db(&self.state_db)?;
  
         // Build client file map
         let mut client_files = std::collections::HashMap::new();
@@ -171,7 +171,7 @@ impl SimpleClient {
         state.deleted_files.retain(|_, deletion_time| *deletion_time > cutoff_time);
         
         state.last_sync = chrono::Utc::now();
-        save_client_state(&state, &self.state_file)?;
+        save_client_state_db(&state, &self.state_db)?;
         
         info!("✓ Bidirectional sync completed");
         Ok(())
@@ -342,7 +342,7 @@ impl SimpleClient {
             let file_info = get_file_info(file_path, &relative_path_str)?;
             
             // Check if file actually changed
-            let mut state = load_client_state(&self.state_file)?;
+            let mut state = load_client_state_db(&self.state_db)?;
             let should_upload = match state.files.get(&file_info.path) {
                 Some(existing) => existing.hash != file_info.hash,
                 None => true,
@@ -354,7 +354,7 @@ impl SimpleClient {
                 
                 state.files.insert(file_info.path.clone(), file_info);
                 state.last_sync = chrono::Utc::now();
-                save_client_state(&state, &self.state_file)?;
+                save_client_state_db(&state, &self.state_db)?;
             }
         }
         
@@ -368,7 +368,7 @@ impl SimpleClient {
             debug!("Detected deletion: {}", relative_path_str);
             
             // Load current state
-            let mut state = load_client_state(&self.state_file)?;
+            let mut state = load_client_state_db(&self.state_db)?;
             
             // Check if this file was in our tracked files
             if state.files.contains_key(&relative_path_str) {
@@ -386,7 +386,7 @@ impl SimpleClient {
                 }
                 
                 state.last_sync = chrono::Utc::now();
-                save_client_state(&state, &self.state_file)?;
+                save_client_state_db(&state, &self.state_db)?;
             }
         }
         
@@ -513,10 +513,10 @@ impl SimpleClient {
     }
 
     fn should_sync_file(&self, path: &std::path::Path) -> bool {
-        // Skip hidden files and the state file
+        // Skip hidden files and the state database file
         if let Some(file_name) = path.file_name() {
             let name = file_name.to_string_lossy();
-            !name.starts_with('.') && name != ".syncpair_state.json"
+            !name.starts_with('.') && name != ".syncpair_state.db"
         } else {
             false
         }
@@ -525,7 +525,7 @@ impl SimpleClient {
     async fn save_final_state(&self) -> Result<()> {
         // Perform one final scan to ensure state is up to date
         let current_files = scan_directory_with_patterns(&self.watch_dir, &self.exclude_patterns)?;
-        let mut state = load_client_state(&self.state_file)?;
+        let mut state = load_client_state_db(&self.state_db)?;
         
         // Update state with current files
         for file_info in current_files {
@@ -533,7 +533,7 @@ impl SimpleClient {
         }
         
         state.last_sync = chrono::Utc::now();
-        save_client_state(&state, &self.state_file)?;
+        save_client_state_db(&state, &self.state_db)?;
         debug!("Final client state saved");
         Ok(())
     }
