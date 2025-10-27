@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FileInfo {
@@ -23,10 +24,61 @@ pub struct ClientState {
     pub last_sync: DateTime<Utc>,
 }
 
+// Configuration types for multi-directory support
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClientConfig {
+    pub client_id: String,
+    pub server: String,
+    pub directories: Vec<DirectoryConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DirectoryConfig {
+    pub name: String,
+    pub local_path: PathBuf,
+    #[serde(default)]
+    pub settings: DirectorySettings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DirectorySettings {
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default = "default_sync_interval")]
+    pub sync_interval_seconds: u64,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub ignore_patterns: Vec<String>,
+}
+
+impl Default for DirectorySettings {
+    fn default() -> Self {
+        Self {
+            description: None,
+            sync_interval_seconds: default_sync_interval(),
+            enabled: default_true(),
+            ignore_patterns: Vec::new(),
+        }
+    }
+}
+
+fn default_sync_interval() -> u64 {
+    30
+}
+
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UploadRequest {
     pub file_info: FileInfo,
     pub content: Vec<u8>,
+    #[serde(default)]
+    pub client_id: Option<String>,
+    #[serde(default)]
+    pub directory: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,11 +92,19 @@ pub struct SyncRequest {
     pub files: HashMap<String, FileInfo>,
     pub deleted_files: HashMap<String, DateTime<Utc>>, // Files deleted with timestamp
     pub last_sync: DateTime<Utc>,
+    #[serde(default)]
+    pub client_id: Option<String>,
+    #[serde(default)]
+    pub directory: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeleteRequest {
     pub path: String,
+    #[serde(default)]
+    pub client_id: Option<String>,
+    #[serde(default)]
+    pub directory: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,6 +131,8 @@ pub struct FileConflict {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DownloadRequest {
     pub path: String,
+    #[serde(default)]
+    pub directory: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

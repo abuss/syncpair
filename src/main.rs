@@ -9,6 +9,7 @@ use std::fs::OpenOptions;
 
 use syncpair::client::SimpleClient;
 use syncpair::server::SimpleServer;
+use syncpair::multi_client::MultiDirectoryClient;
 
 #[derive(Parser)]
 #[command(author, version, about = "A bidirectional file synchronization tool", long_about = None)]
@@ -46,6 +47,11 @@ enum Commands {
         dir: PathBuf,
         #[arg(short = 'i', long, default_value = "30", help = "Sync interval in seconds")]
         sync_interval: u64,
+    },
+    /// Start the client using a YAML configuration file for multi-directory sync
+    Config {
+        #[arg(short, long, help = "Path to the YAML configuration file")]
+        file: PathBuf,
     },
 }
 
@@ -108,7 +114,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                      dir.display(), server, sync_interval);
             
             let client = SimpleClient::new(server, dir)
-                .with_sync_interval(Duration::from_secs(sync_interval));
+                .with_sync_interval(Duration::from_secs(sync_interval))
+                .with_directory("documents".to_string()); // Default to "documents" directory for testing
             
             info!("Starting watch mode. Press Ctrl+C to stop.");
             
@@ -132,6 +139,50 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Wait for the watch task to complete gracefully
             if let Err(e) = watch_task.await {
                 error!("Error during client shutdown: {}", e);
+            }
+        }
+        Commands::Config { file } => {
+            info!("Starting syncpair multi-directory client using config file: {}", 
+                     file.display());
+            
+            // Load configuration and create multi-directory client
+            let multi_client = MultiDirectoryClient::from_config_file(&file)?;
+            
+            info!("Multi-directory client configured for: {}", multi_client.get_client_id());
+            info!("Server: {}", multi_client.get_server_url());
+            
+            let enabled_dirs = multi_client.get_enabled_directories();
+            info!("Enabled directories:");
+            for dir_config in &enabled_dirs {
+                info!("  - {} ({})", dir_config.name, dir_config.local_path.display());
+                if let Some(ref desc) = dir_config.settings.description {
+                    info!("    Description: {}", desc);
+                }
+                info!("    Sync interval: {}s", dir_config.settings.sync_interval_seconds);
+            }
+            
+            info!("Starting watch mode. Press Ctrl+C to stop.");
+            
+            // Create shutdown channel
+            let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
+            
+            // Start watching in a separate task
+            let watch_task = tokio::spawn(async move {
+                if let Err(e) = multi_client.start_watching_with_shutdown(Some(shutdown_rx)).await {
+                    error!("Multi-directory watch error: {}", e);
+                }
+            });
+            
+            // Wait for Ctrl+C
+            signal::ctrl_c().await?;
+            info!("Shutdown signal received, stopping...");
+            
+            // Send shutdown signal to multi-client
+            let _ = shutdown_tx.send(());
+            
+            // Wait for the watch task to complete gracefully
+            if let Err(e) = watch_task.await {
+                error!("Error during multi-client shutdown: {}", e);
             }
         }
     }

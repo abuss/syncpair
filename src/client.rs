@@ -11,29 +11,51 @@ use tracing::{info, warn, error, debug};
 use crate::types::{FileInfo, UploadRequest, UploadResponse, SyncRequest, SyncResponse, DownloadResponse, DeleteRequest, DeleteResponse};
 use crate::utils::{scan_directory, get_file_info, load_client_state, save_client_state, calculate_file_hash};
 
+#[derive(Clone)]
 pub struct SimpleClient {
     server_url: String,
     watch_dir: PathBuf,
     state_file: PathBuf,
     http_client: Client,
     sync_interval: Duration,
+    client_id: Option<String>,
+    directory: Option<String>,
 }
 
 impl SimpleClient {
     pub fn new(server_url: String, watch_dir: PathBuf) -> Self {
         let state_file = watch_dir.join(".syncpair_state.json");
+        
+        // Create HTTP client with timeouts
+        let http_client = Client::builder()
+            .timeout(Duration::from_secs(30))
+            .connect_timeout(Duration::from_secs(10))
+            .build()
+            .expect("Failed to create HTTP client");
  
         Self {
             server_url,
             watch_dir,
             state_file,
-            http_client: Client::new(),
+            http_client,
             sync_interval: Duration::from_secs(30), // Default: sync every 30 seconds
+            client_id: None,
+            directory: None,
         }
     }
 
     pub fn with_sync_interval(mut self, interval: Duration) -> Self {
         self.sync_interval = interval;
+        self
+    }
+
+    pub fn with_client_id(mut self, client_id: String) -> Self {
+        self.client_id = Some(client_id);
+        self
+    }
+
+    pub fn with_directory(mut self, directory: String) -> Self {
+        self.directory = Some(directory);
         self
     }
 
@@ -67,6 +89,8 @@ impl SimpleClient {
             files: client_files.clone(),
             deleted_files: state.deleted_files.clone(),
             last_sync: state.last_sync,
+            client_id: self.client_id.clone(),
+            directory: self.directory.clone(),
         };
         
         let url = format!("{}/sync", self.server_url);
@@ -374,6 +398,8 @@ impl SimpleClient {
         let upload_request = UploadRequest {
             file_info: file_info.clone(),
             content,
+            client_id: self.client_id.clone(),
+            directory: self.directory.clone(),
         };
         
         let url = format!("{}/upload", self.server_url);
@@ -395,7 +421,10 @@ impl SimpleClient {
     }
 
     async fn download_file(&self, file_path: &str) -> Result<()> {
-        let url = format!("{}/download/{}", self.server_url, urlencoding::encode(file_path));
+        let directory_param = self.directory.as_ref()
+            .map(|d| format!("?directory={}", urlencoding::encode(d)))
+            .unwrap_or_else(|| "?directory=default".to_string());
+        let url = format!("{}/download/{}{}", self.server_url, urlencoding::encode(file_path), directory_param);
         let response: DownloadResponse = self.http_client
             .get(&url)
             .send()
@@ -455,6 +484,8 @@ impl SimpleClient {
     async fn send_delete_request(&self, file_path: &str) -> Result<()> {
         let delete_request = DeleteRequest {
             path: file_path.to_string(),
+            client_id: self.client_id.clone(),
+            directory: self.directory.clone(),
         };
         
         let url = format!("{}/delete", self.server_url);

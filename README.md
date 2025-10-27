@@ -1,6 +1,6 @@
 # SyncPair - Advanced File Synchronization Tool
 
-SyncPair is a lightweight Rust-based file synchronization tool that enables **bidirectional sync** between client directories and a central server. The system uses SHA-256 hashes for change detection, timestamp-based conflict resolution, and real-time filesystem watching for automatic synchronization.
+SyncPair is a lightweight Rust-based file synchronization tool that enables **bidirectional sync** between client directories and a central server with **shared directory storage**. Multiple clients can collaborate on the same shared directories in real-time. The system uses SHA-256 hashes for change detection, timestamp-based conflict resolution, and real-time filesystem watching for automatic synchronization.
 
 ## Features
 
@@ -44,15 +44,20 @@ cargo build --release
 SyncPair provides comprehensive logging and configuration options:
 
 ```bash
-# Global options (available for both server and client)
+# Global options (available for all commands)
 --log-level <LEVEL>    # Set log verbosity: error, warn, info, debug, trace (default: info)
 --log-file <FILE>      # Write logs to file instead of stdout
 --quiet                # Quiet mode - only show errors
 
+# Commands
+server                 # Start the server to receive file uploads
+client                 # Start single-directory client to watch and sync files  
+config --file <FILE>   # Start multi-directory client using YAML configuration
+
 # Examples
 ./syncpair --log-level debug server --port 8080
 ./syncpair --quiet client --server http://localhost:8080
-./syncpair --log-file sync.log client --dir ./my-files
+./syncpair --log-file sync.log config --file multi-dirs.yaml
 ```
 
 ### Starting the Server
@@ -82,6 +87,21 @@ SyncPair provides comprehensive logging and configuration options:
 
 # With quiet logging (production mode)
 ./target/release/syncpair --quiet client --server http://production-server:8080
+```
+
+### Multi-Directory Configuration
+
+For advanced users managing multiple directories:
+
+```bash
+# Start multi-directory sync using YAML configuration
+./target/release/syncpair config --file config.yaml
+
+# With detailed logging for debugging
+./target/release/syncpair --log-level debug config --file config.yaml
+
+# Production multi-directory setup
+./target/release/syncpair --quiet --log-file client.log config --file production-config.yaml
 ```
 
 ## How It Works
@@ -299,10 +319,114 @@ cargo clippy                   # Linting
 # Deletions propagate between all clients
 ```
 
+## Multi-Directory Client Support
+
+SyncPair now supports **multi-directory synchronization** through YAML configuration files, allowing a single client to sync multiple directories with complete isolation.
+
+### Multi-Directory Configuration
+
+Create a YAML configuration file to define multiple directories:
+
+```yaml
+client_id: my_unique_client
+server: http://localhost:8080
+
+directories:
+  - name: documents
+    local_path: ~/Documents/
+    settings:
+      description: "Personal documents"
+      sync_interval: 30
+  - name: projects
+    local_path: ~/Projects/
+    settings:
+      description: "Development projects" 
+      sync_interval: 60
+```
+
+### Running Multi-Directory Client
+
+```bash
+# Start multi-directory sync using configuration file
+./target/release/syncpair config --file multi-sync.yaml
+
+# With custom logging
+./target/release/syncpair --log-level debug config --file multi-sync.yaml
+```
+
+### Multi-Client Server Architecture
+
+The server now provides **complete client isolation**:
+
+- **Client Namespacing**: Each `client_id` gets isolated storage on the server
+- **Directory Separation**: Each directory within a client gets its own namespace (`client_id:directory_name`)
+- **Independent State**: Each client-directory combination maintains separate sync state
+- **Concurrent Support**: Multiple clients can sync simultaneously without interference
+
+#### Server Storage Structure
+```
+server_storage/
+├── client1:documents/          # Client1's documents directory
+│   ├── file1.txt
+│   └── server_state.json
+├── client1:projects/           # Client1's projects directory  
+│   ├── main.rs
+│   └── server_state.json
+├── client2:documents/          # Client2's documents directory
+│   ├── different_file.txt
+│   └── server_state.json
+└── default/                    # Backward compatibility for single clients
+    ├── legacy_file.txt
+    └── server_state.json
+```
+
+### Benefits of Multi-Directory Support
+
+- **Organized Sync**: Separate different types of content (documents, projects, media)
+- **Independent Scheduling**: Each directory can have its own sync interval
+- **Client Isolation**: Multiple users/devices can sync without conflicts
+- **Scalable Architecture**: Server handles many clients and directories efficiently
+- **Backward Compatibility**: Existing single-directory clients continue working
+
+### Use Cases
+
+#### Personal Multi-Device Sync
+```yaml
+client_id: john_laptop
+server: http://home-server:8080
+
+directories:
+  - name: documents
+    local_path: ~/Documents/
+  - name: photos  
+    local_path: ~/Pictures/
+  - name: music
+    local_path: ~/Music/
+```
+
+#### Team Development Environment
+```yaml
+client_id: dev_team_member_1
+server: http://company-sync:8080
+
+directories:
+  - name: shared_docs
+    local_path: ~/team-docs/
+    settings:
+      sync_interval: 15  # Frequent sync for collaboration
+  - name: personal_notes
+    local_path: ~/notes/
+    settings: 
+      sync_interval: 300  # Less frequent for personal files
+```
+
 ## Current Capabilities
 
 ✅ **Implemented Features**:
 - Bidirectional file synchronization between multiple clients
+- **Multi-directory client support with YAML configuration**
+- **Server-side client isolation and namespacing**
+- **Concurrent multi-client operations**
 - Timestamp-based conflict resolution (newer files win automatically)
 - File deletion synchronization with timestamp tracking
 - Connection resilience with exponential backoff retry (5 attempts)
