@@ -125,21 +125,58 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
             info!("Server: {}", multi_client.get_server_url());
 
+            // Display default configuration if present
+            if let Some(ref defaults) = multi_client.config.default {
+                info!("Default configuration:");
+                if let Some(ref desc) = defaults.description {
+                    info!("  Default description: {}", desc);
+                }
+                if let Some(interval) = defaults.sync_interval_seconds {
+                    info!("  Default sync interval: {}s", interval);
+                }
+                if let Some(enabled) = defaults.enabled {
+                    info!("  Default enabled: {}", enabled);
+                }
+                if let Some(shared) = defaults.shared {
+                    info!("  Default shared: {}", shared);
+                }
+                if !defaults.ignore_patterns.is_empty() {
+                    info!("  Default ignore patterns: {:?}", defaults.ignore_patterns);
+                }
+            }
+
             let enabled_dirs = multi_client.get_enabled_directories();
             info!("Enabled directories:");
             for dir_config in &enabled_dirs {
+                // Apply defaults to show effective settings
+                let merged_settings = if let Some(ref defaults) = multi_client.config.default {
+                    dir_config.settings.clone().merge_with_defaults(defaults)
+                } else {
+                    dir_config.settings.clone()
+                };
+                let effective_settings = merged_settings.effective_values();
+
                 info!(
                     "  - {} ({})",
                     dir_config.name,
                     dir_config.local_path.display()
                 );
-                if let Some(ref desc) = dir_config.settings.description {
+                if let Some(ref desc) = effective_settings.description {
                     info!("    Description: {}", desc);
                 }
                 info!(
                     "    Sync interval: {}s",
-                    dir_config.settings.sync_interval_seconds
+                    effective_settings.sync_interval_seconds
                 );
+                if effective_settings.shared {
+                    info!("    Shared: true");
+                }
+                if !effective_settings.ignore_patterns.is_empty() {
+                    info!(
+                        "    Ignore patterns: {:?}",
+                        effective_settings.ignore_patterns
+                    );
+                }
             }
 
             info!("Starting watch mode. Press Ctrl+C to stop.");

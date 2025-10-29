@@ -29,7 +29,35 @@ pub struct ClientState {
 pub struct ClientConfig {
     pub client_id: String,
     pub server: String,
+    #[serde(default)]
+    pub default: Option<DefaultSettings>,
     pub directories: Vec<DirectoryConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DefaultSettings {
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub sync_interval_seconds: Option<u64>,
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub ignore_patterns: Vec<String>,
+    #[serde(default)]
+    pub shared: Option<bool>,
+}
+
+impl Default for DefaultSettings {
+    fn default() -> Self {
+        Self {
+            description: None,
+            sync_interval_seconds: None,
+            enabled: None,
+            ignore_patterns: Vec::new(),
+            shared: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,26 +72,86 @@ pub struct DirectoryConfig {
 pub struct DirectorySettings {
     #[serde(default)]
     pub description: Option<String>,
-    #[serde(default = "default_sync_interval")]
-    pub sync_interval_seconds: u64,
-    #[serde(default = "default_true")]
-    pub enabled: bool,
+    #[serde(default)]
+    pub sync_interval_seconds: Option<u64>,
+    #[serde(default)]
+    pub enabled: Option<bool>,
     #[serde(default)]
     pub ignore_patterns: Vec<String>,
     #[serde(default)]
-    pub shared: bool,
+    pub shared: Option<bool>,
 }
 
 impl Default for DirectorySettings {
     fn default() -> Self {
         Self {
             description: None,
-            sync_interval_seconds: default_sync_interval(),
-            enabled: default_true(),
+            sync_interval_seconds: None,
+            enabled: None,
             ignore_patterns: Vec::new(),
-            shared: false,
+            shared: None,
         }
     }
+}
+
+impl DirectorySettings {
+    /// Merge this DirectorySettings with defaults, where defaults provide fallback values
+    pub fn merge_with_defaults(self, defaults: &DefaultSettings) -> Self {
+        Self {
+            // Apply default description only if current is None
+            description: self.description.or_else(|| defaults.description.clone()),
+
+            // Apply default sync_interval only if current is None
+            sync_interval_seconds: self
+                .sync_interval_seconds
+                .or(defaults.sync_interval_seconds),
+
+            // Apply default enabled only if current is None
+            enabled: self.enabled.or(defaults.enabled),
+
+            // Merge ignore patterns: defaults first, then directory-specific
+            ignore_patterns: if defaults.ignore_patterns.is_empty() {
+                self.ignore_patterns
+            } else {
+                let mut merged = defaults.ignore_patterns.clone();
+                merged.extend(self.ignore_patterns);
+                // Remove duplicates while preserving order
+                let mut unique_patterns = Vec::new();
+                for pattern in merged {
+                    if !unique_patterns.contains(&pattern) {
+                        unique_patterns.push(pattern);
+                    }
+                }
+                unique_patterns
+            },
+
+            // Apply default shared only if current is None
+            shared: self.shared.or(defaults.shared),
+        }
+    }
+
+    /// Get the effective values with struct defaults applied
+    pub fn effective_values(&self) -> EffectiveDirectorySettings {
+        EffectiveDirectorySettings {
+            description: self.description.clone(),
+            sync_interval_seconds: self
+                .sync_interval_seconds
+                .unwrap_or(default_sync_interval()),
+            enabled: self.enabled.unwrap_or(default_true()),
+            ignore_patterns: self.ignore_patterns.clone(),
+            shared: self.shared.unwrap_or(false),
+        }
+    }
+}
+
+/// DirectorySettings with all Option fields resolved to concrete values
+#[derive(Debug, Clone)]
+pub struct EffectiveDirectorySettings {
+    pub description: Option<String>,
+    pub sync_interval_seconds: u64,
+    pub enabled: bool,
+    pub ignore_patterns: Vec<String>,
+    pub shared: bool,
 }
 
 fn default_sync_interval() -> u64 {

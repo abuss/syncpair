@@ -142,13 +142,21 @@ Create a YAML configuration file to define your directory setup. Each client can
 client_id: alice
 server: http://localhost:8080
 
+# Default settings applied to all directories (optional)
+default:
+  sync_interval_seconds: 30
+  ignore_patterns:
+    - "*.tmp"
+    - "*.log"
+    - ".git/"
+
 directories:
   # Private directory - isolated to this client only
   - name: personal_notes
     local_path: ~/notes/
     settings:
       description: "Alice's personal notes and documents"
-      sync_interval_seconds: 30
+      # sync_interval_seconds inherited from default (30)
       # shared: false (default - creates server storage at alice:personal_notes/)
 
   # Shared directory - collaborative workspace with other clients
@@ -157,12 +165,9 @@ directories:
     settings:
       description: "Shared team project files"
       shared: true  # Multiple clients can use same "team_project" directory
-      sync_interval_seconds: 15
+      sync_interval_seconds: 15  # Override default
       ignore_patterns:
-        - "*.tmp"
-        - "*.log"
-        - "node_modules/"
-        - ".git/"
+        - "node_modules/"  # Added to default patterns
 ```
 
 ```yaml
@@ -170,13 +175,21 @@ directories:
 client_id: bob
 server: http://localhost:8080
 
+# Same defaults as Alice for consistency
+default:
+  sync_interval_seconds: 30
+  ignore_patterns:
+    - "*.tmp"
+    - "*.log"
+    - ".git/"
+
 directories:
   # Different private directory - isolated to Bob only
   - name: personal_workspace
     local_path: ~/bob-files/
     settings:
       description: "Bob's personal workspace"
-      sync_interval_seconds: 30
+      # sync_interval_seconds inherited from default (30)
       # shared: false (default - creates server storage at bob:personal_workspace/)
 
   # Same shared directory - collaborates with Alice
@@ -245,6 +258,53 @@ directories:
 | `directories[].settings.sync_interval_seconds` | Sync frequency in seconds | No | `30` |
 | `directories[].settings.enabled` | Enable/disable this directory | No | `true` |
 | `directories[].settings.ignore_patterns` | Glob patterns to exclude | No | `[]` |
+| `default` | Default settings for all directories | No | None |
+| `default.description` | Default description | No | None |
+| `default.sync_interval_seconds` | Default sync interval | No | `30` |
+| `default.enabled` | Default enabled state | No | `true` |
+| `default.shared` | Default sharing mode | No | `false` |
+| `default.ignore_patterns` | Default ignore patterns | No | `[]` |
+
+### Default Configuration
+
+The `default` section allows you to specify common settings that apply to all directories unless explicitly overridden:
+
+```yaml
+client_id: my_client
+server: http://localhost:8080
+
+# Default settings for all directories
+default:
+  description: "Default workspace directory"
+  sync_interval_seconds: 60
+  ignore_patterns:
+    - "*.tmp"
+    - "*.log"
+    - ".git"
+    - "node_modules"
+
+directories:
+  # This directory inherits all defaults
+  - name: workspace
+    local_path: ~/workspace/
+    settings: {}
+
+  # This directory overrides some defaults
+  - name: fast_sync
+    local_path: ~/urgent/
+    settings:
+      description: "Urgent project"
+      sync_interval_seconds: 15  # Override default
+      # ignore_patterns still inherited and merged
+```
+
+**Key features:**
+- **Inheritance**: Unspecified settings inherit from defaults
+- **Override**: Directory settings override defaults when specified
+- **Pattern Merging**: Ignore patterns are merged (defaults + directory-specific)
+- **Deduplication**: Duplicate patterns are automatically removed
+
+For detailed information, see [DEFAULT_CONFIG.md](DEFAULT_CONFIG.md).
 
 ### Exclude Patterns
 
