@@ -1,5 +1,4 @@
 use syncpair::types::ClientConfig;
-use std::fs;
 use anyhow::Result;
 
 #[path = "common/mod.rs"]

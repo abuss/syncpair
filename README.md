@@ -95,20 +95,19 @@ SyncPair provides comprehensive logging and configuration options:
 
 # Commands
 server                 # Start the server to receive file uploads
-client                 # Start single-directory client to watch and sync files  
-config --file <FILE>   # Start multi-directory client using YAML configuration
+client --file <FILE>   # Start multi-directory client using YAML configuration
 
 # Examples
 ./syncpair --log-level debug server --port 8080
-./syncpair --quiet client --server http://localhost:8080
-./syncpair --log-file sync.log config --file multi-dirs.yaml
+./syncpair --quiet client --file config.yaml
+./syncpair --log-file sync.log client --file multi-dirs.yaml
 ```
 
 ### Starting the Server
 
 ```bash
-# Start server on default port (8080) with default storage directory
-./target/release/syncpair server
+# Start server on default port (8080) with specified storage directory
+./target/release/syncpair server --storage-dir /path/to/server/storage
 
 # Start server on custom port with custom storage directory
 ./target/release/syncpair server --port 9000 --storage-dir /path/to/server/storage
@@ -120,17 +119,14 @@ config --file <FILE>   # Start multi-directory client using YAML configuration
 ### Running the Client
 
 ```bash
-# Start client to watch and sync a directory (default: ./sync_dir to localhost:8080)
-./target/release/syncpair client
+# Start client using YAML configuration file
+./target/release/syncpair client --file config.yaml
 
-# Watch custom directory and sync to custom server
-./target/release/syncpair client --server http://server:8080 --dir /path/to/sync/directory
+# With detailed logging for debugging
+./target/release/syncpair --log-level debug client --file config.yaml
 
-# With custom sync interval (default: 30 seconds)
-./target/release/syncpair client --sync-interval 60 --dir ./documents
-
-# With quiet logging (production mode)
-./target/release/syncpair --quiet client --server http://production-server:8080
+# Production setup with quiet logging
+./target/release/syncpair --quiet --log-file client.log client --file production-config.yaml
 ```
 
 ## Multi-Directory Configuration
@@ -154,7 +150,7 @@ directories:
       description: "Alice's personal notes and documents"
       sync_interval_seconds: 30
       # shared: false (default - creates server storage at alice:personal_notes/)
-      
+
   # Shared directory - collaborative workspace with other clients
   - name: team_project
     local_path: ~/team-work/
@@ -182,7 +178,7 @@ directories:
       description: "Bob's personal workspace"
       sync_interval_seconds: 30
       # shared: false (default - creates server storage at bob:personal_workspace/)
-      
+
   # Same shared directory - collaborates with Alice
   - name: team_project
     local_path: ~/shared-work/
@@ -211,7 +207,7 @@ directories:
         - "*.tmp"
         - "*.log"
         - ".env"         # Environment files
-      
+
   # Shared configuration files (collaborative)
   - name: team_configs
     local_path: ~/shared-configs/
@@ -223,7 +219,7 @@ directories:
         - "*.bak"
         - "*.swp"
         - ".DS_Store"
-        
+
   # Documentation collaboration (shared)
   - name: documentation
     local_path: ~/docs/
@@ -257,7 +253,7 @@ Smart file filtering using glob patterns:
 ```yaml
 ignore_patterns:
   - "*.tmp"           # All .tmp files
-  - "*.log"           # All .log files  
+  - "*.log"           # All .log files
   - "node_modules/"   # Node.js dependencies directory
   - "target/"         # Rust build directory
   - ".git/"           # Git repository metadata
@@ -269,17 +265,17 @@ ignore_patterns:
   - ".env"            # Environment configuration files
 ```
 
-### Running Multi-Directory Configuration
+### Running Client Configuration
 
 ```bash
-# Start multi-directory sync using YAML configuration
-./target/release/syncpair config --file config.yaml
+# Start client sync using YAML configuration
+./target/release/syncpair client --file config.yaml
 
 # With detailed logging for debugging
-./target/release/syncpair --log-level debug config --file config.yaml
+./target/release/syncpair --log-level debug client --file config.yaml
 
-# Production multi-directory setup
-./target/release/syncpair --quiet --log-file client.log config --file production-config.yaml
+# Production setup
+./target/release/syncpair --quiet --log-file client.log client --file production-config.yaml
 ```
 
 ## How It Works
@@ -330,7 +326,7 @@ SyncPair provides a comprehensive logging system suitable for both development a
 ### Log Levels
 
 - **`error`**: Critical failures, connection errors, file operation failures
-- **`warn`**: Conflicts, retries, ignored operations, stale entries  
+- **`warn`**: Conflicts, retries, ignored operations, stale entries
 - **`info`**: Major operations, startup/shutdown, conflict resolutions (default)
 - **`debug`**: Detailed sync activities, file operations, detailed progress
 - **`trace`**: Very detailed internal operations
@@ -349,7 +345,7 @@ SyncPair provides a comprehensive logging system suitable for both development a
 
 # Examples
 ./syncpair --log-level info --log-file production.log server     # Production server
-./syncpair --log-level debug client                              # Development debugging  
+./syncpair --log-level debug client                              # Development debugging
 ./syncpair --quiet --log-file client-prod.log client            # Production client
 ```
 
@@ -399,7 +395,7 @@ struct SyncRequest {
     last_sync: Option<DateTime>,                // Last successful sync time
 }
 
-// Sync response from server to client  
+// Sync response from server to client
 struct SyncResponse {
     files_to_upload: Vec<String>,              // Files client should upload
     files_to_download: Vec<FileInfo>,          // Files client should download
@@ -419,7 +415,7 @@ struct FileInfo {
 ### Dependencies
 
 Comprehensive dependency set for advanced functionality:
-- `tokio` - Async runtime and utilities  
+- `tokio` - Async runtime and utilities
 - `warp` - HTTP server framework with filtering
 - `notify` - Cross-platform filesystem watching
 - `reqwest` - Feature-rich HTTP client with retry support
@@ -472,16 +468,16 @@ cargo clippy                   # Linting
 ./target/release/syncpair --quiet --log-file /var/log/syncpair-server.log \
     server --port 8080 --storage-dir /data/syncpair
 
-# Production Client (quiet mode with error-only logging)  
+# Production Client (quiet mode with error-only logging)
 ./target/release/syncpair --quiet --log-file /var/log/syncpair-client.log \
-    client --server http://sync-server:8080 --dir /home/user/documents
+    client --file /home/user/production-config.yaml
 
 # Development setup with detailed logging
 ./target/release/syncpair --log-level debug \
     server --port 8080 --storage-dir ./test-server
 
 ./target/release/syncpair --log-level debug \
-    client --server http://localhost:8080 --dir ./test-client
+    client --file ./test-config.yaml
 ```
 
 ## Collaboration Examples
@@ -495,10 +491,10 @@ Multiple clients can work together on shared directories with automatic conflict
 ./target/release/syncpair --log-level info server --port 8080 --storage-dir ./shared
 
 # Terminal 2: Alice joins shared collaboration
-./target/release/syncpair config --file alice-config.yaml
+./target/release/syncpair client --file alice-config.yaml
 
-# Terminal 3: Bob joins same shared collaboration  
-./target/release/syncpair config --file bob-config.yaml
+# Terminal 3: Bob joins same shared collaboration
+./target/release/syncpair client --file bob-config.yaml
 
 # Now Alice and Bob collaborate in real-time:
 # - When Alice adds a file, Bob sees it instantly
@@ -521,7 +517,7 @@ directories:
     settings:
       description: "Alice's personal files"
       # shared: false (default - isolated storage)
-      
+
   # Shared team directory
   - name: team_docs
     local_path: ~/shared-team/
@@ -532,7 +528,7 @@ directories:
 ```
 
 ```yaml
-# bob-config.yaml  
+# bob-config.yaml
 client_id: bob
 server: http://localhost:8080
 
@@ -543,7 +539,7 @@ directories:
     settings:
       description: "Bob's personal files"
       # shared: false (default - isolated storage)
-      
+
   # Same shared team directory
   - name: team_docs
     local_path: ~/team-collab/
@@ -581,10 +577,10 @@ directories:
 - **Solution**: Created separate `save_directory_state_with_lock()` function that doesn't acquire mutex, used within existing lock scope
 - **Result**: Server now handles multiple concurrent clients without hanging
 
-### Enhanced HTTP Resilience  
+### Enhanced HTTP Resilience
 - **Connection Timeouts**: Added 30-second timeouts for all HTTP requests to prevent client hangs
 - **Upload Timeout**: 30-second timeout for file upload operations
-- **Download Timeout**: 10-second timeout for file download operations  
+- **Download Timeout**: 10-second timeout for file download operations
 - **Sync Timeout**: 30-second timeout for sync negotiation requests
 - **Result**: Clients no longer hang indefinitely on network issues, providing reliable team collaboration
 
@@ -626,12 +622,12 @@ Potential improvements for advanced team deployments:
 ./syncpair --quiet --log-file /var/log/syncpair-server.log \
           server --port 8080 --storage-dir /data/team-syncpair
 
-# Team Members (production)  
+# Team Members (production)
 ./syncpair --quiet --log-file /var/log/syncpair-alice.log \
-          client --server http://sync-server:8080 --sync-interval 60 --dir /home/alice/team-docs
+          client --file /home/alice/team-config.yaml
 
 ./syncpair --quiet --log-file /var/log/syncpair-bob.log \
-          client --server http://sync-server:8080 --sync-interval 60 --dir /home/bob/team-docs
+          client --file /home/bob/team-config.yaml
 ```
 
 ### Team Monitoring

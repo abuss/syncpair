@@ -18,8 +18,6 @@ pub struct SimpleServer {
 
 impl SimpleServer {
     pub fn new(storage_dir: PathBuf) -> Result<Self> {
-        std::fs::create_dir_all(&storage_dir)?;
-        
         let mut directory_storage = HashMap::new();
         
         // Load existing directory states from subdirectories
@@ -45,17 +43,7 @@ impl SimpleServer {
             }
         }
         
-        // If no directory storage exists, create default directory for backward compatibility
-        if directory_storage.is_empty() {
-            let state_db = storage_dir.join("server_state.db");
-            let (files, deleted_files) = if state_db.exists() {
-                let state = load_client_state_db(&state_db)?;
-                (state.files, state.deleted_files)
-            } else {
-                (HashMap::new(), HashMap::new())
-            };
-            directory_storage.insert("default".to_string(), (files, deleted_files));
-        }
+
         
         Ok(Self {
             base_storage_dir: storage_dir,
@@ -116,7 +104,18 @@ impl SimpleServer {
             .and_then(move |file_path: String, query: HashMap<String, String>| {
                 let server = server_for_download.clone();
                 async move {
-                    let directory_name = query.get("directory").cloned().unwrap_or("default".to_string());
+                    let directory_name = match query.get("directory") {
+                        Some(dir) => dir.clone(),
+                        None => {
+                            let error_response = DownloadResponse {
+                                success: false,
+                                file_info: None,
+                                content: None,
+                                message: "Missing required 'directory' parameter".to_string(),
+                            };
+                            return Ok::<_, warp::Rejection>(warp::reply::json(&error_response));
+                        }
+                    };
                     match server.handle_download(file_path, directory_name).await {
                         Ok(response) => Ok::<_, warp::Rejection>(warp::reply::json(&response)),
                         Err(e) => {
@@ -203,7 +202,8 @@ impl SimpleServer {
     }
 
     async fn handle_upload(&self, upload_req: UploadRequest) -> Result<UploadResponse> {
-        let directory_name = upload_req.directory.unwrap_or_else(|| "default".to_string());
+        let directory_name = upload_req.directory
+            .ok_or_else(|| anyhow::anyhow!("Missing required 'directory' field in upload request"))?;
         self.ensure_directory_exists(&directory_name)?;
         
         let directory_storage_dir = self.get_directory_storage_dir(&directory_name);
@@ -254,7 +254,8 @@ impl SimpleServer {
     }
 
     async fn handle_sync(&self, sync_req: SyncRequest) -> Result<SyncResponse> {
-        let directory_name = sync_req.directory.unwrap_or_else(|| "default".to_string());
+        let directory_name = sync_req.directory
+            .ok_or_else(|| anyhow::anyhow!("Missing required 'directory' field in sync request"))?;
         
         // Create directory on filesystem first
         let directory_storage_dir = self.get_directory_storage_dir(&directory_name);
@@ -455,7 +456,8 @@ impl SimpleServer {
     }
 
     async fn handle_delete(&self, delete_req: DeleteRequest) -> Result<DeleteResponse> {
-        let directory_name = delete_req.directory.unwrap_or_else(|| "default".to_string());
+        let directory_name = delete_req.directory
+            .ok_or_else(|| anyhow::anyhow!("Missing required 'directory' field in delete request"))?;
         self.ensure_directory_exists(&directory_name)?;
         
         let directory_storage_dir = self.get_directory_storage_dir(&directory_name);

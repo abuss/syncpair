@@ -81,7 +81,7 @@ async fn test_exclude_patterns_edge_cases() -> Result<()> {
     
     let exclude_patterns = vec!["*.tmp".to_string()];
     
-    let all_files = syncpair::utils::scan_directory(&test_dir)?;
+    let _all_files = syncpair::utils::scan_directory(&test_dir)?;
     let filtered_files = scan_directory_with_patterns(&test_dir, &exclude_patterns)?;
     
     println!("Edge case test results:");

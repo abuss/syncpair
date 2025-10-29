@@ -67,6 +67,10 @@ impl SimpleClient {
     }
 
     pub async fn initial_sync(&self) -> Result<()> {
+        if self.directory.is_none() {
+            return Err(anyhow::anyhow!("Directory must be specified for client operations"));
+        }
+        
         info!("Starting bidirectional sync...");
  
         let current_files = scan_directory_with_patterns(&self.watch_dir, &self.exclude_patterns)?;
@@ -429,9 +433,9 @@ impl SimpleClient {
     }
 
     async fn download_file(&self, file_path: &str) -> Result<()> {
-        let directory_param = self.directory.as_ref()
-            .map(|d| format!("?directory={}", urlencoding::encode(d)))
-            .unwrap_or_else(|| "?directory=default".to_string());
+        let directory = self.directory.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Directory must be specified for client operations"))?;
+        let directory_param = format!("?directory={}", urlencoding::encode(directory));
         let url = format!("{}/download/{}{}", self.server_url, urlencoding::encode(file_path), directory_param);
         let response: DownloadResponse = self.http_client
             .get(&url)

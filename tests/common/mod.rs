@@ -1,24 +1,8 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::fs;
 use tempfile::TempDir;
 use anyhow::Result;
-
-/// Get the path to test fixtures directory
-pub fn fixtures_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("fixtures")
-}
-
-/// Get the path to test configs directory
-pub fn configs_dir() -> PathBuf {
-    fixtures_dir().join("configs")
-}
-
-/// Get the path to test directories
-pub fn directories_dir() -> PathBuf {
-    fixtures_dir().join("directories")
-}
+use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 /// Create a temporary directory for testing
 pub fn create_temp_dir() -> Result<TempDir> {
@@ -27,29 +11,10 @@ pub fn create_temp_dir() -> Result<TempDir> {
 
 /// Initialize logging for tests
 pub fn init_test_logging() {
-    let _ = env_logger::builder()
-        .is_test(true)
-        .filter_level(log::LevelFilter::Debug)
+    let _ = tracing_subscriber::registry()
+        .with(EnvFilter::from_default_env().add_directive(tracing::Level::DEBUG.into()))
+        .with(fmt::layer().with_test_writer())
         .try_init();
-}
-
-/// Copy a directory recursively
-pub fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
-    fs::create_dir_all(dst)?;
-    
-    for entry in fs::read_dir(src)? {
-        let entry = entry?;
-        let src_path = entry.path();
-        let dst_path = dst.join(entry.file_name());
-        
-        if src_path.is_dir() {
-            copy_dir_recursive(&src_path, &dst_path)?;
-        } else {
-            fs::copy(&src_path, &dst_path)?;
-        }
-    }
-    
-    Ok(())
 }
 
 /// Create test directory with sample files for exclude pattern testing

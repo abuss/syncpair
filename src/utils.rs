@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use walkdir::WalkDir;
+use tracing::{warn, debug};
 
 pub fn calculate_file_hash(path: &Path) -> Result<String> {
     let contents = fs::read(path)?;
@@ -44,7 +45,7 @@ pub fn scan_directory_with_patterns(dir_path: &Path, exclude_patterns: &[String]
     let compiled_patterns = match compiled_patterns {
         Ok(patterns) => patterns,
         Err(e) => {
-            log::warn!("Invalid exclude pattern: {}", e);
+            warn!("Invalid exclude pattern: {}", e);
             Vec::new() // Continue with no patterns if any are invalid
         }
     };
@@ -82,7 +83,7 @@ pub fn scan_directory_with_patterns(dir_path: &Path, exclude_patterns: &[String]
             });
             
             if should_exclude {
-                log::debug!("Excluding file due to pattern match: {}", relative_path_str);
+                debug!("Excluding file due to pattern match: {}", relative_path_str);
                 continue;
             }
 

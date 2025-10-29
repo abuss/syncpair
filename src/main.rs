@@ -1,15 +1,14 @@
 use clap::{Parser, Subcommand};
+use std::fs::OpenOptions;
 use std::path::PathBuf;
-use std::time::Duration;
+
 use tokio::signal;
 use tokio::sync::broadcast;
+use tracing::{error, info, Level};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
-use tracing::{Level, info, error};
-use std::fs::OpenOptions;
 
-use syncpair::client::SimpleClient;
-use syncpair::server::SimpleServer;
 use syncpair::multi_client::MultiDirectoryClient;
+use syncpair::server::SimpleServer;
 
 #[derive(Parser)]
 #[command(author, version, about = "A bidirectional file synchronization tool", long_about = None)]
@@ -17,15 +16,15 @@ struct Args {
     /// Log level: error, warn, info, debug, trace
     #[arg(short = 'v', long, default_value = "info", help = "Set log level")]
     log_level: String,
-    
+
     /// Write logs to file instead of stdout
     #[arg(short = 'l', long, help = "Write logs to file")]
     log_file: Option<PathBuf>,
-    
+
     /// Quiet mode - suppress all output except errors
     #[arg(short = 'q', long, help = "Quiet mode - only show errors")]
     quiet: bool,
-    
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -34,28 +33,28 @@ struct Args {
 enum Commands {
     /// Start the server to receive file uploads
     Server {
-        #[arg(short, long, default_value = "8080", help = "Port to run the server on")]
+        #[arg(
+            short,
+            long,
+            default_value = "8080",
+            help = "Port to run the server on"
+        )]
         port: u16,
-        #[arg(short, long, default_value = "./server_storage", help = "Directory to store uploaded files")]
+        #[arg(short, long, help = "Directory to store uploaded files")]
         storage_dir: PathBuf,
     },
-    /// Start the client to watch and sync files
-    Client {
-        #[arg(short, long, default_value = "http://localhost:8080", help = "Server URL to sync to")]
-        server: String,
-        #[arg(short, long, default_value = "./sync_dir", help = "Directory to watch for file changes")]
-        dir: PathBuf,
-        #[arg(short = 'i', long, default_value = "30", help = "Sync interval in seconds")]
-        sync_interval: u64,
-    },
     /// Start the client using a YAML configuration file for multi-directory sync
-    Config {
+    Client {
         #[arg(short, long, help = "Path to the YAML configuration file")]
         file: PathBuf,
     },
 }
 
-fn init_logging(log_level: &str, log_file: Option<&PathBuf>, quiet: bool) -> Result<(), Box<dyn std::error::Error>> {
+fn init_logging(
+    log_level: &str,
+    log_file: Option<&PathBuf>,
+    quiet: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let level = if quiet {
         Level::ERROR
     } else {
@@ -69,8 +68,7 @@ fn init_logging(log_level: &str, log_file: Option<&PathBuf>, quiet: bool) -> Res
         }
     };
 
-    let filter = EnvFilter::from_default_env()
-        .add_directive(level.into());
+    let filter = EnvFilter::from_default_env().add_directive(level.into());
 
     if let Some(log_file_path) = log_file {
         // Log to file
@@ -78,7 +76,7 @@ fn init_logging(log_level: &str, log_file: Option<&PathBuf>, quiet: bool) -> Res
             .create(true)
             .append(true)
             .open(log_file_path)?;
-        
+
         tracing_subscriber::registry()
             .with(filter)
             .with(fmt::layer().with_writer(file).with_ansi(false))
@@ -103,83 +101,69 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match args.command {
         Commands::Server { port, storage_dir } => {
-            info!("Starting syncpair server on port {} with storage directory: {}", 
-                     port, storage_dir.display());
-            
+            info!(
+                "Starting syncpair server on port {} with storage directory: {}",
+                port,
+                storage_dir.display()
+            );
+
             let server = SimpleServer::new(storage_dir)?;
             server.start(port).await?;
         }
-        Commands::Client { server, dir, sync_interval } => {
-            info!("Starting syncpair client, syncing {} to {} (sync every {}s)", 
-                     dir.display(), server, sync_interval);
-            
-            let client = SimpleClient::new(server, dir)
-                .with_sync_interval(Duration::from_secs(sync_interval))
-                .with_directory("documents".to_string()); // Default to "documents" directory for testing
-            
-            info!("Starting watch mode. Press Ctrl+C to stop.");
-            
-            // Create shutdown channel
-            let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
-            
-            // Start watching in a separate task
-            let watch_task = tokio::spawn(async move {
-                if let Err(e) = client.start_watching_with_shutdown(Some(shutdown_rx)).await {
-                    error!("Watch error: {}", e);
-                }
-            });
-            
-            // Wait for Ctrl+C
-            signal::ctrl_c().await?;
-            info!("Shutdown signal received, stopping...");
-            
-            // Send shutdown signal to client
-            let _ = shutdown_tx.send(());
-            
-            // Wait for the watch task to complete gracefully
-            if let Err(e) = watch_task.await {
-                error!("Error during client shutdown: {}", e);
-            }
-        }
-        Commands::Config { file } => {
-            info!("Starting syncpair multi-directory client using config file: {}", 
-                     file.display());
-            
+        Commands::Client { file } => {
+            info!(
+                "Starting syncpair multi-directory client using config file: {}",
+                file.display()
+            );
+
             // Load configuration and create multi-directory client
             let multi_client = MultiDirectoryClient::from_config_file(&file)?;
-            
-            info!("Multi-directory client configured for: {}", multi_client.get_client_id());
+
+            info!(
+                "Multi-directory client configured for: {}",
+                multi_client.get_client_id()
+            );
             info!("Server: {}", multi_client.get_server_url());
-            
+
             let enabled_dirs = multi_client.get_enabled_directories();
             info!("Enabled directories:");
             for dir_config in &enabled_dirs {
-                info!("  - {} ({})", dir_config.name, dir_config.local_path.display());
+                info!(
+                    "  - {} ({})",
+                    dir_config.name,
+                    dir_config.local_path.display()
+                );
                 if let Some(ref desc) = dir_config.settings.description {
                     info!("    Description: {}", desc);
                 }
-                info!("    Sync interval: {}s", dir_config.settings.sync_interval_seconds);
+                info!(
+                    "    Sync interval: {}s",
+                    dir_config.settings.sync_interval_seconds
+                );
             }
-            
+
             info!("Starting watch mode. Press Ctrl+C to stop.");
-            
+
             // Create shutdown channel
             let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
-            
+
             // Start watching in a separate task
             let watch_task = tokio::spawn(async move {
-                if let Err(e) = multi_client.start_watching_with_shutdown(Some(shutdown_rx)).await {
+                if let Err(e) = multi_client
+                    .start_watching_with_shutdown(Some(shutdown_rx))
+                    .await
+                {
                     error!("Multi-directory watch error: {}", e);
                 }
             });
-            
+
             // Wait for Ctrl+C
             signal::ctrl_c().await?;
             info!("Shutdown signal received, stopping...");
-            
+
             // Send shutdown signal to multi-client
             let _ = shutdown_tx.send(());
-            
+
             // Wait for the watch task to complete gracefully
             if let Err(e) = watch_task.await {
                 error!("Error during multi-client shutdown: {}", e);
