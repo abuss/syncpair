@@ -44,6 +44,10 @@ enum Commands {
         /// YAML configuration file path
         #[arg(short, long)]
         file: PathBuf,
+
+        /// Force resynchronization by clearing local state
+        #[arg(long)]
+        force_resync: bool,
     },
 }
 
@@ -64,10 +68,14 @@ async fn main() -> Result<()> {
             let server = SyncServer::new(storage_dir.clone())?;
             server.start(*port).await?;
         }
-        Commands::Client { file } => {
+        Commands::Client { file, force_resync } => {
             tracing::info!("Starting client mode with config: {}", file.display());
             
-            let client = MultiDirectoryClient::from_config_file(file)?;
+            let mut client = MultiDirectoryClient::from_config_file(file)?;
+            if *force_resync {
+                tracing::info!("Force resync enabled - clearing local state");
+                client.force_resync().await?;
+            }
             client.start().await?;
         }
     }

@@ -108,12 +108,31 @@ impl SyncClient {
         let sync_client = self.clone();
         tokio::spawn(async move {
             let mut timer = interval(sync_interval);
+            let mut consecutive_failures = 0;
+            
             loop {
                 timer.tick().await;
-                if let Err(e) = sync_client.sync().await {
-                    tracing::error!("Periodic sync failed: {}", e);
-                    // Retry with exponential backoff
-                    sync_client.retry_sync().await;
+                match sync_client.sync().await {
+                    Ok(()) => {
+                        consecutive_failures = 0;
+                    }
+                    Err(e) => {
+                        consecutive_failures += 1;
+                        let error_string = e.to_string().to_lowercase();
+                        
+                        if error_string.contains("server unavailable") {
+                            // Only log server unavailable message occasionally to avoid spam
+                            if consecutive_failures == 1 || consecutive_failures % 10 == 0 {
+                                tracing::info!("Server unavailable, will continue retrying (attempt {})", consecutive_failures);
+                            }
+                        } else {
+                            tracing::error!("Periodic sync failed: {}", e);
+                            // Only retry with backoff for non-connection errors
+                            if consecutive_failures <= 3 {
+                                sync_client.retry_sync().await;
+                            }
+                        }
+                    }
                 }
             }
         });
@@ -151,7 +170,10 @@ impl SyncClient {
                             tokio::spawn(async move {
                                 sleep(Duration::from_millis(500)).await;
                                 if let Err(e) = client.sync().await {
-                                    tracing::error!("Event-triggered sync failed: {}", e);
+                                    let error_string = e.to_string().to_lowercase();
+                                    if !error_string.contains("server unavailable") {
+                                        tracing::error!("Event-triggered sync failed: {}", e);
+                                    }
                                 }
                             });
                         }
@@ -174,7 +196,10 @@ impl SyncClient {
                         let client = self.clone();
                         tokio::spawn(async move {
                             if let Err(e) = client.sync().await {
-                                tracing::error!("Delete-triggered sync failed: {}", e);
+                                let error_string = e.to_string().to_lowercase();
+                                if !error_string.contains("server unavailable") {
+                                    tracing::error!("Delete-triggered sync failed: {}", e);
+                                }
                             }
                         });
                     }
@@ -227,12 +252,29 @@ impl SyncClient {
 
         // Send sync request to server
         let sync_url = format!("{}/sync", self.server_url);
-        let response = self
+        let response = match self
             .http_client
             .post(&sync_url)
             .json(&sync_request)
             .send()
-            .await?;
+            .await {
+                Ok(resp) => resp,
+                Err(e) => {
+                    let error_string = e.to_string().to_lowercase();
+                    if error_string.contains("connection") || 
+                       error_string.contains("network") ||
+                       error_string.contains("refused") ||
+                       error_string.contains("timeout") ||
+                       error_string.contains("unreachable") ||
+                       error_string.contains("sending request") ||
+                       error_string.contains("connect") {
+                        tracing::debug!("Server unavailable, sync will be retried later");
+                        return Err(anyhow!("Server unavailable"));
+                    } else {
+                        return Err(anyhow!("Sync request failed: {}", e));
+                    }
+                }
+            };
 
         if !response.status().is_success() {
             return Err(anyhow!("Sync request failed: {}", response.status()));
@@ -258,20 +300,75 @@ impl SyncClient {
         }
 
         // Upload files to server
+        let mut connection_error = false;
+        let mut successful_uploads = 0;
+        
         for file_path in &sync_response.files_to_upload {
-            if let Err(e) = self.upload_file(file_path).await {
-                tracing::error!("Failed to upload {}: {}", file_path, e);
-            } else {
-                tracing::debug!("✓ Uploaded: {}", file_path);
+            // If we already detected a connection error, don't attempt more uploads
+            if connection_error {
+                tracing::debug!("Skipping upload due to server unavailability: {}", file_path);
+                continue;
+            }
+            
+            match self.upload_file(file_path).await {
+                Ok(()) => {
+                    successful_uploads += 1;
+                    tracing::debug!("✓ Uploaded: {}", file_path);
+                }
+                Err(e) => {
+                    // Check if this is a connection error (server unavailable)
+                    let error_string = e.to_string().to_lowercase();
+                    if error_string.contains("connection") || 
+                       error_string.contains("network") ||
+                       error_string.contains("refused") ||
+                       error_string.contains("timeout") ||
+                       error_string.contains("unreachable") ||
+                       error_string.contains("sending request") ||
+                       error_string.contains("connect") {
+                        connection_error = true;
+                        let remaining_files = sync_response.files_to_upload.len() - successful_uploads;
+                        tracing::warn!("Server became unavailable during upload. {} files queued for retry when server is available", remaining_files);
+                        break; // Stop attempting further uploads
+                    } else {
+                        tracing::error!("Failed to upload {}: {}", file_path, e);
+                    }
+                }
             }
         }
 
         // Download files from server
+        let mut download_connection_error = false;
+        let mut successful_downloads = 0;
+        
         for file_info in &sync_response.files_to_download {
-            if let Err(e) = self.download_file(&file_info.path).await {
-                tracing::error!("Failed to download {}: {}", file_info.path, e);
-            } else {
-                tracing::debug!("✓ Downloaded: {}", file_info.path);
+            // If we already detected a connection error, don't attempt more downloads
+            if download_connection_error {
+                tracing::debug!("Skipping download due to server unavailability: {}", file_info.path);
+                continue;
+            }
+            
+            match self.download_file(&file_info.path).await {
+                Ok(()) => {
+                    successful_downloads += 1;
+                    tracing::debug!("✓ Downloaded: {}", file_info.path);
+                }
+                Err(e) => {
+                    let error_string = e.to_string().to_lowercase();
+                    if error_string.contains("connection") || 
+                       error_string.contains("network") ||
+                       error_string.contains("refused") ||
+                       error_string.contains("timeout") ||
+                       error_string.contains("unreachable") ||
+                       error_string.contains("sending request") ||
+                       error_string.contains("connect") {
+                        download_connection_error = true;
+                        let remaining_files = sync_response.files_to_download.len() - successful_downloads;
+                        tracing::warn!("Server became unavailable during download. {} files queued for retry when server is available", remaining_files);
+                        break; // Stop attempting further downloads
+                    } else {
+                        tracing::error!("Failed to download {}: {}", file_info.path, e);
+                    }
+                }
             }
         }
 
@@ -284,9 +381,15 @@ impl SyncClient {
             }
         }
 
-        // Update local state
+        // Update local state only if all operations completed successfully
         let mut state = self.state.write().await;
-        state.last_sync = Utc::now();
+        
+        // Only update last_sync if no connection errors occurred
+        let all_operations_successful = !connection_error && !download_connection_error;
+        if all_operations_successful {
+            state.last_sync = Utc::now();
+            tracing::debug!("Sync completed successfully");
+        }
 
         // Clean up old deletion entries
         cleanup_deleted_entries(&mut state.deleted_files, 30);
@@ -295,7 +398,19 @@ impl SyncClient {
         let state_db_path = self.watch_dir.join(".syncpair_state.db");
         save_client_state(&state_db_path, &*state)?;
 
-        tracing::debug!("Sync completed successfully");
+        // Provide comprehensive sync status
+        if connection_error || download_connection_error {
+            let total_pending = (sync_response.files_to_upload.len() - successful_uploads) + 
+                              (sync_response.files_to_download.len() - successful_downloads);
+            if total_pending > 0 {
+                tracing::info!("Sync partially completed: {} operations pending retry when server is available", total_pending);
+                // Return error to indicate incomplete sync, but not "Server unavailable" to avoid retry loop
+                return Err(anyhow!("Sync incomplete: {} operations pending", total_pending));
+            } else {
+                tracing::debug!("Sync completed successfully");
+            }
+        }
+        
         Ok(())
     }
 
@@ -390,6 +505,26 @@ impl SyncClient {
         state.files.remove(file_path);
         state.deleted_files.insert(file_path.to_string(), Utc::now());
 
+        Ok(())
+    }
+
+    /// Force resynchronization by clearing local state
+    pub async fn force_resync(&self) -> Result<()> {
+        tracing::info!("Clearing local state for force resync");
+        
+        let state_db_path = self.watch_dir.join(".syncpair_state.db");
+        
+        // Create a fresh state with default values
+        let fresh_state = ClientState::default();
+        
+        // Save the fresh state, overwriting any existing state
+        save_client_state(&state_db_path, &fresh_state)?;
+        
+        // Update the in-memory state as well
+        let mut state = self.state.write().await;
+        *state = fresh_state;
+        
+        tracing::info!("Local state cleared for directory: {}", self.watch_dir.display());
         Ok(())
     }
 
@@ -506,6 +641,21 @@ impl MultiDirectoryClient {
             }
         }
 
+        Ok(())
+    }
+
+    /// Force resynchronization by clearing local state for all clients
+    pub async fn force_resync(&mut self) -> Result<()> {
+        tracing::info!("Force resync: clearing local state for all {} directories", self.clients.len());
+        
+        for (i, client) in self.clients.iter().enumerate() {
+            if let Err(e) = client.force_resync().await {
+                tracing::error!("Failed to clear state for directory {}: {}", i, e);
+                return Err(e);
+            }
+        }
+        
+        tracing::info!("Force resync: local state cleared for all directories");
         Ok(())
     }
 

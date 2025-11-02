@@ -1,48 +1,47 @@
-use std::path::Path;
-use std::fs;
+use std::path::PathBuf;
 use tempfile::TempDir;
-use anyhow::Result;
-use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing_subscriber::EnvFilter;
 
-/// Create a temporary directory for testing
-pub fn create_temp_dir() -> Result<TempDir> {
-    Ok(tempfile::tempdir()?)
-}
-
-/// Initialize logging for tests
+/// Initialize test logging for better debugging
 pub fn init_test_logging() {
-    let _ = tracing_subscriber::registry()
-        .with(EnvFilter::from_default_env().add_directive(tracing::Level::DEBUG.into()))
-        .with(fmt::layer().with_test_writer())
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new("debug"))
+        )
+        .with_test_writer()
         .try_init();
 }
 
-/// Create test directory with sample files for exclude pattern testing
-pub fn create_exclude_pattern_test_dir(base_path: &Path) -> Result<()> {
-    let test_dir = base_path.join("test_exclude_demo");
-    fs::create_dir_all(&test_dir)?;
+/// Create a temporary directory for testing
+pub fn create_temp_dir() -> TempDir {
+    TempDir::new().expect("Failed to create temporary directory")
+}
+
+/// Create a test file with specified content
+pub fn create_test_file(dir: &PathBuf, name: &str, content: &str) -> PathBuf {
+    let file_path = dir.join(name);
+    if let Some(parent) = file_path.parent() {
+        std::fs::create_dir_all(parent).expect("Failed to create parent directories");
+    }
+    std::fs::write(&file_path, content).expect("Failed to write test file");
+    file_path
+}
+
+/// Wait for a condition with timeout
+pub async fn wait_for_condition<F>(mut condition: F, timeout_secs: u64) -> bool
+where
+    F: FnMut() -> bool,
+{
+    let start = std::time::Instant::now();
+    let timeout = std::time::Duration::from_secs(timeout_secs);
     
-    // Create normal files
-    fs::write(test_dir.join("normal_file.txt"), "normal content")?;
-    fs::write(test_dir.join("README.md"), "readme content")?;
+    while start.elapsed() < timeout {
+        if condition() {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
     
-    // Create files that should be excluded
-    fs::write(test_dir.join("temp_file.tmp"), "temp content")?;
-    fs::write(test_dir.join("build.log"), "log content")?;
-    fs::write(test_dir.join("backup_file.bak"), "backup content")?;
-    
-    // Create directories that should be excluded
-    let node_modules = test_dir.join("node_modules");
-    fs::create_dir_all(&node_modules)?;
-    fs::write(node_modules.join("package.json"), r#"{"name": "test"}"#)?;
-    
-    let temp_dir = test_dir.join("temp");
-    fs::create_dir_all(&temp_dir)?;
-    fs::write(temp_dir.join("cache.dat"), "cache data")?;
-    
-    let git_dir = test_dir.join(".git");
-    fs::create_dir_all(&git_dir)?;
-    fs::write(git_dir.join("config"), "git config")?;
-    
-    Ok(())
+    false
 }
