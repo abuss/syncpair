@@ -148,7 +148,7 @@ default:
   ignore_patterns:
     - "*.tmp"
     - "*.log"
-    - ".git/"
+    - "**/.git/**"
 
 directories:
   # Private directory - isolated to this client only
@@ -181,7 +181,7 @@ default:
   ignore_patterns:
     - "*.tmp"
     - "*.log"
-    - ".git/"
+    - "**/.git/**"
 
 directories:
   # Different private directory - isolated to Bob only
@@ -214,12 +214,13 @@ directories:
     settings:
       description: "Personal development files"
       sync_interval_seconds: 60
-      ignore_patterns:
-        - "target/"      # Rust build directory
-        - "node_modules/" # Node.js dependencies
-        - "*.tmp"
-        - "*.log"
-        - ".env"         # Environment files
+        ignore_patterns:
+          - "target/"      # Rust build directory
+          - "node_modules/" # Node.js dependencies
+          - "**/.venv/**"   # Python virtual environments
+          - "*.tmp"
+          - "*.log"
+          - ".env"         # Environment files
 
   # Shared configuration files (collaborative)
   - name: team_configs
@@ -280,7 +281,8 @@ default:
   ignore_patterns:
     - "*.tmp"
     - "*.log"
-    - ".git"
+    - "**/.git/**"
+    - "**/.venv/**"
     - "node_modules"
 
 directories:
@@ -316,13 +318,41 @@ ignore_patterns:
   - "*.log"           # All .log files
   - "node_modules/**" # Node.js dependencies directory and all contents
   - "target/**"       # Rust build directory and all contents
-  - ".git/**"         # Git repository metadata and all contents
+  - "**/.git/**"      # Git repository metadata and all contents
+  - "**/.venv/**"     # Python virtual environments and all contents
   - "*.DS_Store"      # macOS system files
   - "temp/**"         # Everything in temp directory and subdirectories
   - "*.bak"           # Backup files
   - "build/**"        # Build output directory and all contents
   - "*.cache"         # Cache files
   - ".env"            # Environment configuration files
+
+### Common Pattern Mistakes and Best Practices
+
+**❌ Common Mistakes:**
+```yaml
+ignore_patterns:
+  - "**/*.venv"       # WRONG: Matches files ending with .venv, not directories
+  - "/.git"           # WRONG: Only matches .git in root directory
+  - ".venv/"          # WRONG: Doesn't exclude files within .venv directory
+  - "node_modules"    # WRONG: Only matches exact filename, not directory contents
+```
+
+**✅ Correct Patterns:**
+```yaml
+ignore_patterns:
+  - "**/.venv/**"     # Correctly excludes Python virtual environments
+  - "**/.git/**"      # Correctly excludes all git repositories
+  - ".venv/**"        # Alternative: excludes .venv from root only
+  - "node_modules/**" # Correctly excludes Node.js dependencies
+```
+
+**Key Rules:**
+- Use `**/.pattern/**` to exclude directories named `.pattern` anywhere in the tree
+- Use `pattern/**` to exclude a directory and all its contents
+- Use `*.extension` to exclude files with specific extensions
+- Use `**/pattern` to match files/directories anywhere in the tree
+- Test your patterns to ensure they work as expected
 ```
 
 **Important Directory Pattern Notes:**

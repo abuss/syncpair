@@ -348,6 +348,12 @@ impl SyncClient {
         let mut successful_downloads = 0;
         
         for file_info in &sync_response.files_to_download {
+            // Check if file should be excluded from download
+            if should_ignore_file(&file_info.path, &self.exclude_patterns) {
+                tracing::debug!("Skipping download of excluded file: {}", file_info.path);
+                continue;
+            }
+            
             // If we already detected a connection error, don't attempt more downloads
             if download_connection_error {
                 tracing::debug!("Skipping download due to server unavailability: {}", file_info.path);
@@ -381,6 +387,12 @@ impl SyncClient {
 
         // Delete files locally
         for file_path in &sync_response.files_to_delete {
+            // Check if file should be excluded from deletion
+            if should_ignore_file(file_path, &self.exclude_patterns) {
+                tracing::debug!("Skipping deletion of excluded file: {}", file_path);
+                continue;
+            }
+            
             if let Err(e) = self.delete_file_local(file_path).await {
                 tracing::error!("Failed to delete {}: {}", file_path, e);
             } else {

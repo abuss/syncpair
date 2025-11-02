@@ -443,3 +443,90 @@ async fn test_server_reconnect_after_shutdown() {
     // Cleanup
     server_handle2.abort();
 }
+
+#[tokio::test]
+async fn test_download_exclude_patterns() {
+    init_test_logging();
+
+    let server_dir = create_temp_dir();
+    let client1_dir = create_temp_dir();
+    let client2_dir = create_temp_dir();
+
+    // Start server
+    let server = SyncServer::new(server_dir.path().to_path_buf()).unwrap();
+    let server_handle = tokio::spawn(async move {
+        let _ = timeout(Duration::from_secs(30), server.start(8092)).await;
+    });
+
+    // Wait for server to start
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Create first client with no exclude patterns (will upload database files)
+    let client1 = SyncClient::new(
+        "http://localhost:8092".to_string(),
+        client1_dir.path().to_path_buf(),
+        Duration::from_secs(5),
+        Some("exclude_test".to_string()),
+        Some("exclude_dir".to_string()),
+        vec![], // No exclude patterns
+    ).unwrap();
+
+    // Create files that would normally be excluded
+    create_test_file(&client1_dir.path().to_path_buf(), "normal_file.txt", "This should sync");
+    create_test_file(&client1_dir.path().to_path_buf(), "app.sqlite-wal", "This is a WAL file");
+    create_test_file(&client1_dir.path().to_path_buf(), "database.db-journal", "This is a journal file");
+    create_test_file(&client1_dir.path().to_path_buf(), "temp.log", "This is a log file");
+
+    // First client syncs all files (including those that would be excluded)
+    let sync_result = timeout(Duration::from_secs(10), client1.sync()).await;
+    assert!(sync_result.is_ok(), "First client sync should succeed");
+
+    // Wait a moment for sync to complete
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Create second client with exclude patterns
+    let client2 = SyncClient::new(
+        "http://localhost:8092".to_string(),
+        client2_dir.path().to_path_buf(),
+        Duration::from_secs(5),
+        Some("exclude_test".to_string()),
+        Some("exclude_dir".to_string()),
+        vec![
+            "*.sqlite-wal".to_string(),
+            "*.db-journal".to_string(),
+            "*.log".to_string(),
+        ],
+    ).unwrap();
+
+    // Second client syncs (should download only non-excluded files)
+    let sync_result = timeout(Duration::from_secs(10), client2.sync()).await;
+    assert!(sync_result.is_ok(), "Second client sync should succeed");
+
+    // Wait for sync to complete
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Verify that client2 only downloaded non-excluded files
+    assert!(
+        client2_dir.path().join("normal_file.txt").exists(),
+        "Normal file should be downloaded"
+    );
+    assert!(
+        !client2_dir.path().join("app.sqlite-wal").exists(),
+        "WAL file should NOT be downloaded due to exclude pattern"
+    );
+    assert!(
+        !client2_dir.path().join("database.db-journal").exists(),
+        "Journal file should NOT be downloaded due to exclude pattern"
+    );
+    assert!(
+        !client2_dir.path().join("temp.log").exists(),
+        "Log file should NOT be downloaded due to exclude pattern"
+    );
+
+    // Verify the content of the downloaded file
+    let content = std::fs::read_to_string(client2_dir.path().join("normal_file.txt")).unwrap();
+    assert_eq!(content, "This should sync");
+
+    // Cleanup
+    server_handle.abort();
+}

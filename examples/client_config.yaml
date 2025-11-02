@@ -25,6 +25,8 @@ default:
     - "*.tmp"
     - "*.log"
     - ".DS_Store"
+    - "**/.venv/**"      # Python virtual environments
+    - "**/.git/**"       # Git repositories
 
 # Directories to synchronize
 directories:
@@ -39,9 +41,10 @@ directories:
       # Additional ignore patterns for this directory
       ignore_patterns:
         - "node_modules/**"
-        - ".git/**"
+        - "**/.git/**"
         - "target/**"
         - "build/**"
+        - "**/.venv/**"
 
   # Project workspace (client-specific)
   - name: "Projects"
@@ -51,13 +54,14 @@ directories:
       shared: false
       # Custom ignore patterns for development projects
       ignore_patterns:
-        - ".git/**"
+        - "**/.git/**"
         - "node_modules/**"
         - "target/**"
         - "dist/**"
         - "build/**"
         - ".vscode/**"
         - ".idea/**"
+        - "**/.venv/**"
         - "*.o"
         - "*.exe"
 

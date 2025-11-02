@@ -80,18 +80,79 @@ pub fn scan_directory(
     Ok(files)
 }
 
-/// Check if a file should be ignored based on patterns
+/// Check if a file should be ignored based on gitignore-style patterns
 pub fn should_ignore_file(relative_path: &str, ignore_patterns: &[String]) -> bool {
     for pattern in ignore_patterns {
-        if let Ok(glob_pattern) = glob::Pattern::new(pattern) {
-            if glob_pattern.matches(relative_path) {
-                return true;
-            }
-        } else {
-            tracing::warn!("Invalid ignore pattern: {}", pattern);
+        if matches_gitignore_pattern(pattern, relative_path) {
+            return true;
         }
     }
     false
+}
+
+/// Match a single gitignore-style pattern against a file path
+fn matches_gitignore_pattern(pattern: &str, file_path: &str) -> bool {
+    // Handle empty patterns
+    if pattern.is_empty() {
+        return false;
+    }
+    
+    // Handle patterns with invalid glob syntax by falling back to basic matching
+    let glob_result = glob::Pattern::new(pattern);
+    let glob_pattern = match glob_result {
+        Ok(pattern) => pattern,
+        Err(_) => {
+            tracing::warn!("Invalid ignore pattern: {}", pattern);
+            return false;
+        }
+    };
+    
+    // For gitignore-style behavior, we need to handle different pattern types
+    
+    // 1. If pattern ends with '/', it only matches directories (not implemented for files)
+    if pattern.ends_with('/') {
+        // For files, directory patterns don't match - this would need directory context
+        return false;
+    }
+    
+    // 2. If pattern starts with '**/], it can match at any depth
+    if pattern.starts_with("**/") {
+        return glob_pattern.matches(file_path);
+    }
+    
+    // 3. If pattern contains '**' anywhere, use full glob matching
+    if pattern.contains("**") {
+        return glob_pattern.matches(file_path);
+    }
+    
+    // 4. If pattern contains '/' anywhere, it's a path-based pattern
+    // But we need to be careful about the depth matching
+    if pattern.contains('/') {
+        // For gitignore, path patterns should match exactly at the specified depth
+        // unless they contain wildcards that allow for deeper matching
+        
+        // Count the number of '/' in pattern and file_path
+        let pattern_depth = pattern.matches('/').count();
+        let file_depth = file_path.matches('/').count();
+        
+        // If the pattern doesn't end with a wildcard and has fewer path segments
+        // than the file, it shouldn't match (unless it contains **)
+        if !pattern.ends_with('*') && pattern_depth < file_depth {
+            return false;
+        }
+        
+        return glob_pattern.matches(file_path);
+    }
+    
+    // 5. For simple patterns (like *.tmp), only match if the file is at the root level
+    // This is the key gitignore behavior: simple patterns don't match nested files
+    if file_path.contains('/') {
+        // File is in a subdirectory, simple patterns should not match
+        return false;
+    }
+    
+    // File is at root level, match against the filename
+    glob_pattern.matches(file_path)
 }
 
 /// Initialize SQLite database for state storage
@@ -372,6 +433,123 @@ mod tests {
         // The correct pattern "temp/**" matches files within the temp directory
         assert!(should_ignore_file("temp/temp_file.txt", &patterns_correct));
         assert!(should_ignore_file("temp/subdir/file.txt", &patterns_correct));
+    }
+
+    #[test]
+    fn test_nested_directory_exclude_patterns() {
+        // Test comprehensive nested directory patterns with corrected expectations
+        let patterns = vec![
+            "node_modules/**".to_string(),
+            "target/**".to_string(),
+            ".git/**".to_string(),
+            "*.tmp".to_string(),      // This should only match top-level .tmp files
+            "**/*.log".to_string(),   // This should match .log files at any level
+        ];
+        
+        // Test files that should be ignored
+        let should_ignore = vec![
+            "node_modules/package.json",
+            "node_modules/some-package/dist/index.js",
+            "node_modules/deep/nested/path/file.js",
+            "target/debug/app",
+            "target/release/optimized/binary",
+            ".git/config",
+            ".git/objects/abc123",
+            ".git/refs/heads/main",
+            "build.tmp",              // Top-level .tmp file should be ignored
+            "app.log",               // Will be caught by **/*.log
+            "logs/debug.log",        // Will be caught by **/*.log
+        ];
+        
+        for path in should_ignore {
+            assert!(should_ignore_file(path, &patterns), 
+                "Expected '{}' to be ignored with patterns: {:?}", path, patterns);
+        }
+        
+        // Test files that should NOT be ignored  
+        let should_include = vec![
+            "src/main.rs",
+            "Cargo.toml",
+            "README.md",
+            "docs/guide.md",
+            "tests/integration_test.rs",
+            "src/components/header.rs",
+            "public/index.html",
+            "temp/file.tmp",         // Nested .tmp file should NOT be ignored by *.tmp
+        ];
+        
+        for path in should_include {
+            assert!(!should_ignore_file(path, &patterns),
+                "Expected '{}' to NOT be ignored with patterns: {:?}", path, patterns);
+        }
+    }
+
+    #[test]
+    fn test_scan_directory_with_exclude_patterns() {
+        let temp_dir = TempDir::new().unwrap();
+        let base_path = temp_dir.path();
+        
+        // Create a complex directory structure
+        fs::create_dir_all(base_path.join("src/components")).unwrap();
+        fs::create_dir_all(base_path.join("node_modules/package")).unwrap();
+        fs::create_dir_all(base_path.join("target/debug")).unwrap();
+        fs::create_dir_all(base_path.join("logs")).unwrap();
+        fs::create_dir_all(base_path.join("temp")).unwrap();
+        
+        // Create various files
+        fs::write(base_path.join("README.md"), "readme").unwrap();
+        fs::write(base_path.join("app.tmp"), "root tmp file").unwrap();
+        fs::write(base_path.join("src/main.rs"), "main code").unwrap();
+        fs::write(base_path.join("src/components/header.rs"), "header component").unwrap();
+        fs::write(base_path.join("node_modules/package.json"), "package config").unwrap();
+        fs::write(base_path.join("node_modules/package/index.js"), "package code").unwrap();
+        fs::write(base_path.join("target/debug/app"), "binary").unwrap();
+        fs::write(base_path.join("logs/app.log"), "log content").unwrap();
+        fs::write(base_path.join("temp/cache.tmp"), "nested tmp file").unwrap();
+        fs::write(base_path.join("debug.log"), "root log file").unwrap();
+        
+        // Test with gitignore-style patterns
+        let ignore_patterns = vec![
+            "node_modules/**".to_string(),
+            "target/**".to_string(),
+            "*.tmp".to_string(),          // Should only match root-level .tmp files
+            "**/*.log".to_string(),       // Should match .log files at any level
+        ];
+        
+        let files = scan_directory(base_path, &ignore_patterns).unwrap();
+        
+        // Files that should be included
+        let expected_included = vec![
+            "README.md",
+            "src/main.rs",
+            "src/components/header.rs",
+            "temp/cache.tmp",  // This should be included because *.tmp only matches root level
+        ];
+        
+        for file in expected_included {
+            assert!(files.contains_key(file), 
+                "Expected '{}' to be included in scan results", file);
+        }
+        
+        // Files that should be excluded
+        let expected_excluded = vec![
+            "app.tmp",                    // Excluded by *.tmp
+            "node_modules/package.json",  // Excluded by node_modules/**
+            "node_modules/package/index.js", // Excluded by node_modules/**
+            "target/debug/app",          // Excluded by target/**
+            "logs/app.log",              // Excluded by **/*.log
+            "debug.log",                 // Excluded by **/*.log
+        ];
+        
+        for file in expected_excluded {
+            assert!(!files.contains_key(file), 
+                "Expected '{}' to be excluded from scan results", file);
+        }
+        
+        println!("Scan results:");
+        for (file, _) in &files {
+            println!("  Included: {}", file);
+        }
     }
 
     #[test]
