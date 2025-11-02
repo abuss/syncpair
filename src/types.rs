@@ -216,6 +216,9 @@ impl DirectorySettings {
         // Add built-in ignore patterns that should always be excluded
         let builtin_patterns = vec![
             ".syncpair_state.db".to_string(),
+            ".syncpair_state.db-journal".to_string(),
+            ".syncpair_state.db-wal".to_string(),
+            ".syncpair_state.db-shm".to_string(),
         ];
         
         patterns.extend(builtin_patterns);
@@ -234,10 +237,13 @@ mod tests {
 
     #[test]
     fn test_builtin_ignore_patterns() {
-        // Test that .syncpair_state.db is always included in ignore patterns
+        // Test that SQLite database files are always included in ignore patterns
         let settings = DirectorySettings::default();
         let patterns = settings.get_ignore_patterns();
         assert!(patterns.contains(&".syncpair_state.db".to_string()));
+        assert!(patterns.contains(&".syncpair_state.db-journal".to_string()));
+        assert!(patterns.contains(&".syncpair_state.db-wal".to_string()));
+        assert!(patterns.contains(&".syncpair_state.db-shm".to_string()));
     }
 
     #[test]
@@ -258,12 +264,12 @@ mod tests {
     fn test_ignore_patterns_no_duplicates() {
         // Test that duplicates are removed
         let settings = DirectorySettings {
-            ignore_patterns: Some(vec![".syncpair_state.db".to_string(), "*.tmp".to_string()]),
+            ignore_patterns: Some(vec![".syncpair_state.db-journal".to_string(), "*.tmp".to_string()]),
             ..Default::default()
         };
         
         let patterns = settings.get_ignore_patterns();
-        let syncpair_count = patterns.iter().filter(|p| *p == ".syncpair_state.db").count();
-        assert_eq!(syncpair_count, 1, "Should have exactly one .syncpair_state.db pattern");
+        let journal_count = patterns.iter().filter(|p| *p == ".syncpair_state.db-journal").count();
+        assert_eq!(journal_count, 1, "Should have exactly one .syncpair_state.db-journal pattern");
     }
 }

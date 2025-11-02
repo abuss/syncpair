@@ -314,16 +314,24 @@ Smart file filtering using glob patterns:
 ignore_patterns:
   - "*.tmp"           # All .tmp files
   - "*.log"           # All .log files
-  - "node_modules/"   # Node.js dependencies directory
-  - "target/"         # Rust build directory
-  - ".git/"           # Git repository metadata
+  - "node_modules/**" # Node.js dependencies directory and all contents
+  - "target/**"       # Rust build directory and all contents
+  - ".git/**"         # Git repository metadata and all contents
   - "*.DS_Store"      # macOS system files
-  - "temp/*"          # Everything in temp directory
+  - "temp/**"         # Everything in temp directory and subdirectories
   - "*.bak"           # Backup files
-  - "build/"          # Build output directory
+  - "build/**"        # Build output directory and all contents
   - "*.cache"         # Cache files
   - ".env"            # Environment configuration files
 ```
+
+**Important Directory Pattern Notes:**
+- Use `directory/**` to exclude a directory and all its contents
+- Pattern `directory/` only matches the directory name itself, not files within it
+- Pattern `directory/**` correctly excludes all files and subdirectories within the directory
+- Examples:
+  - ✅ `temp/**` excludes `temp/file.txt`, `temp/subdir/file.txt`
+  - ❌ `temp/` does NOT exclude files within the temp directory
 
 ### Running Client Configuration
 

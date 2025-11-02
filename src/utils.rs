@@ -361,6 +361,20 @@ mod tests {
     }
 
     #[test]
+    fn test_directory_exclude_patterns() {
+        // Test the problematic pattern
+        let patterns_wrong = vec!["temp/".to_string()];
+        let patterns_correct = vec!["temp/**".to_string()];
+        
+        // The wrong pattern "temp/" only matches a directory named exactly "temp/"
+        assert!(!should_ignore_file("temp/temp_file.txt", &patterns_wrong));
+        
+        // The correct pattern "temp/**" matches files within the temp directory
+        assert!(should_ignore_file("temp/temp_file.txt", &patterns_correct));
+        assert!(should_ignore_file("temp/subdir/file.txt", &patterns_correct));
+    }
+
+    #[test]
     fn test_get_relative_path() {
         let base = Path::new("/home/user/documents");
         let full = Path::new("/home/user/documents/folder/file.txt");

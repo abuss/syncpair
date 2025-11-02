@@ -10,7 +10,7 @@ use tokio::sync::{mpsc, RwLock};
 use tokio::time::{interval, sleep};
 
 use crate::types::{
-    ClientConfig, ClientState, DownloadRequest, SyncRequest, UploadRequest,
+    ClientConfig, ClientState, DirectorySettings, DownloadRequest, SyncRequest, UploadRequest,
 };
 use crate::utils::{
     cleanup_deleted_entries, ensure_directory_exists, expand_path, get_relative_path, load_client_state,
@@ -45,6 +45,13 @@ impl SyncClient {
             .timeout(Duration::from_secs(30))
             .build()?;
 
+        // Merge user-provided patterns with built-in patterns
+        let settings = DirectorySettings {
+            ignore_patterns: Some(exclude_patterns),
+            ..Default::default()
+        };
+        let merged_exclude_patterns = settings.get_ignore_patterns();
+
         // Load existing state or create new
         let state_db_path = watch_dir.join(".syncpair_state.db");
         let state = load_client_state(&state_db_path)?;
@@ -55,7 +62,7 @@ impl SyncClient {
             sync_interval,
             client_id,
             directory,
-            exclude_patterns,
+            exclude_patterns: merged_exclude_patterns,
             http_client,
             state: Arc::new(RwLock::new(state)),
         })

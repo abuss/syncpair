@@ -49,7 +49,7 @@ async fn test_upload_resumption_after_server_restart() {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Try to sync while server is down - this should detect files to upload but fail
-    let failed_sync = timeout(Duration::from_secs(5), client.sync()).await;
+    let _failed_sync = timeout(Duration::from_secs(5), client.sync()).await;
     println!("Sync with server down completed - should have handled gracefully");
 
     // Start a new server instance

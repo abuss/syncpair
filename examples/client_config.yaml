@@ -1,67 +1,71 @@
 # SyncPair Client Configuration Example
 # This file shows how to configure the multi-directory sync client
 
-# Client identification (optional)
+# Client identification
 # If not provided, the system hostname will be used
 client_id: "my-laptop"
 
 # Server connection settings
-server_url: "http://localhost:8080"
+server: "http://localhost:8080"
 
-# Retry settings for network operations
-retry_attempts: 3
-retry_delay_ms: 1000
-
-# Sync interval in seconds
-sync_interval_seconds: 30
+# Default settings applied to all directories (optional)
+default:
+  # Default sync interval in seconds
+  sync_interval_seconds: 30
+  # Default shared setting
+  shared: false
+  # Default enabled setting
+  enabled: true
+  # Global ignore patterns applied to all directories
+  ignore_patterns:
+    - "*.swp"
+    - "*.swo"
+    - "*~"
+    - ".syncpair*"
+    - "*.tmp"
+    - "*.log"
+    - ".DS_Store"
 
 # Directories to synchronize
 directories:
   # Personal documents (shared across all clients)
-  - path: "/home/user/Documents"
-    # Directory name on the server (optional, defaults to directory basename)
-    name: "Documents"
-    # Whether this is a shared directory (true) or client-specific (false)
-    shared: true
-    # Files and patterns to ignore during sync
-    exclude_patterns:
-      - "*.tmp"
-      - "*.log"
-      - ".DS_Store"
-      - "node_modules/**"
-      - ".git/**"
-      - "target/**"
-      - "build/**"
+  - name: "Documents"
+    local_path: "/home/user/Documents"
+    settings:
+      # Override default: make this directory shared
+      shared: true
+      # Override default sync interval
+      sync_interval_seconds: 30
+      # Additional ignore patterns for this directory
+      ignore_patterns:
+        - "node_modules/**"
+        - ".git/**"
+        - "target/**"
+        - "build/**"
 
   # Project workspace (client-specific)
-  - path: "/home/user/Projects"
-    name: "Projects"
-    shared: false
-    exclude_patterns:
-      - "*.tmp"
-      - ".git/**"
-      - "node_modules/**"
-      - "target/**"
-      - "dist/**"
-      - "build/**"
-      - ".vscode/**"
-      - ".idea/**"
+  - name: "Projects"
+    local_path: "/home/user/Projects"
+    settings:
+      # Uses default shared: false
+      shared: false
+      # Custom ignore patterns for development projects
+      ignore_patterns:
+        - ".git/**"
+        - "node_modules/**"
+        - "target/**"
+        - "dist/**"
+        - "build/**"
+        - ".vscode/**"
+        - ".idea/**"
+        - "*.o"
+        - "*.exe"
 
   # Shared team folder
-  - path: "/home/user/Team"
-    name: "TeamShared"
-    shared: true
-    exclude_patterns:
-      - "*.log"
-      - "*.tmp"
-      - ".DS_Store"
-
-# Global exclude patterns (applied to all directories)
-global_exclude_patterns:
-  - "*.swp"
-  - "*.swo"
-  - "*~"
-  - ".syncpair*"
-
-# Logging configuration
-log_level: "info"  # error, warn, info, debug, trace
+  - name: "TeamShared"
+    local_path: "/home/user/Team"
+    settings:
+      # Override default: make this directory shared
+      shared: true
+      # Faster sync for team collaboration
+      sync_interval_seconds: 15

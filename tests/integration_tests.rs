@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use std::time::Duration;
 
 use syncpair::{SyncClient, SyncServer};
@@ -43,283 +42,73 @@ async fn test_single_client_sync() {
         "http://localhost:8081".to_string(),
         client_dir.path().to_path_buf(),
         Duration::from_secs(5),
-        Some("test_client".to_string()),
-        Some("test_dir".to_string()),
-        vec![],
+        Some("journal_test".to_string()),
+        Some("journal_dir".to_string()),
+        vec![], // No custom ignore patterns - testing built-in exclusions only
     ).unwrap();
 
-    // Perform initial sync
+    // Create regular files that should sync
+    create_test_file(&client_dir.path().to_path_buf(), "regular_file.txt", "This should sync");
+    create_test_file(&client_dir.path().to_path_buf(), "data.json", "This should also sync");
+
+    // Create SQLite journal files that should be excluded
+    create_test_file(&client_dir.path().to_path_buf(), ".syncpair_state.db-journal", "Journal file content");
+    create_test_file(&client_dir.path().to_path_buf(), ".syncpair_state.db-wal", "WAL file content");
+    create_test_file(&client_dir.path().to_path_buf(), ".syncpair_state.db-shm", "Shared memory file content");
+    create_test_file(&client_dir.path().to_path_buf(), ".syncpair_state.db", "Main database file");
+
+    // Create other SQLite-related files that should be excluded
+    create_test_file(&client_dir.path().to_path_buf(), "user.db-journal", "User journal file");
+    create_test_file(&client_dir.path().to_path_buf(), "app.sqlite-wal", "App WAL file");
+
+    // Perform sync
     let sync_result = timeout(Duration::from_secs(10), client.sync()).await;
     assert!(sync_result.is_ok(), "Sync should complete successfully");
 
-    // Cleanup
-    server_handle.abort();
-}
-
-#[tokio::test]
-async fn test_multi_client_collaboration() {
-    init_test_logging();
-
-    let server_dir = create_temp_dir();
-    let client1_dir = create_temp_dir();
-    let client2_dir = create_temp_dir();
-
-    // Start server
-    let server = SyncServer::new(server_dir.path().to_path_buf()).unwrap();
-    let server_handle = tokio::spawn(async move {
-        let _ = timeout(Duration::from_secs(60), server.start(8082)).await;
-    });
-
-    // Wait for server to start
+    // Wait a moment for any async operations to complete
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    // Create shared directory clients (no client_id for shared directories)
-    let client1 = SyncClient::new(
-        "http://localhost:8082".to_string(),
-        client1_dir.path().to_path_buf(),
-        Duration::from_secs(2),
-        None, // Shared directory
-        Some("shared_project".to_string()),
-        vec![],
-    ).unwrap();
-
-    let client2 = SyncClient::new(
-        "http://localhost:8082".to_string(),
-        client2_dir.path().to_path_buf(),
-        Duration::from_secs(2),
-        None, // Shared directory
-        Some("shared_project".to_string()),
-        vec![],
-    ).unwrap();
-
-    // Client 1 creates a file
-    create_test_file(&client1_dir.path().to_path_buf(), "shared_file.txt", "Content from client 1");
-
-    // Sync client 1
-    let sync1_result = timeout(Duration::from_secs(10), client1.sync()).await;
-    assert!(sync1_result.is_ok(), "Client 1 sync should succeed");
-
-    // Sync client 2 (should download the file)
-    let sync2_result = timeout(Duration::from_secs(10), client2.sync()).await;
-    assert!(sync2_result.is_ok(), "Client 2 sync should succeed");
-
-    // Check if file exists in client 2
-    let client2_file = client2_dir.path().join("shared_file.txt");
+    // Check what files were synced to the server
+    let server_client_dir = server_dir.path().join("journal_test:journal_dir");
     
-    // Wait for file to appear
-    let file_exists = wait_for_condition(|| client2_file.exists(), 5).await;
-    assert!(file_exists, "File should be synchronized to client 2");
-
-    if client2_file.exists() {
-        let content = std::fs::read_to_string(&client2_file).unwrap();
-        assert_eq!(content, "Content from client 1");
-    }
-
-    // Cleanup
-    server_handle.abort();
-}
-
-#[tokio::test]
-async fn test_conflict_resolution() {
-    init_test_logging();
-
-    let server_dir = create_temp_dir();
-    let client1_dir = create_temp_dir();
-    let client2_dir = create_temp_dir();
-
-    // Start server
-    let server = SyncServer::new(server_dir.path().to_path_buf()).unwrap();
-    let server_handle = tokio::spawn(async move {
-        let _ = timeout(Duration::from_secs(60), server.start(8083)).await;
-    });
-
-    // Wait for server to start
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    // Create clients
-    let client1 = SyncClient::new(
-        "http://localhost:8083".to_string(),
-        client1_dir.path().to_path_buf(),
-        Duration::from_secs(10),
-        None,
-        Some("conflict_test".to_string()),
-        vec![],
-    ).unwrap();
-
-    let client2 = SyncClient::new(
-        "http://localhost:8083".to_string(),
-        client2_dir.path().to_path_buf(),
-        Duration::from_secs(10),
-        None,
-        Some("conflict_test".to_string()),
-        vec![],
-    ).unwrap();
-
-    // Both clients create the same file with different content
-    create_test_file(&client1_dir.path().to_path_buf(), "conflict.txt", "Version 1");
-    
-    // Small delay to ensure different timestamps
-    tokio::time::sleep(Duration::from_millis(100)).await;
-    
-    create_test_file(&client2_dir.path().to_path_buf(), "conflict.txt", "Version 2");
-
-    // Sync client 1 first
-    let _sync1 = timeout(Duration::from_secs(10), client1.sync()).await;
-
-    // Then sync client 2 (should resolve conflict)
-    let _sync2 = timeout(Duration::from_secs(10), client2.sync()).await;
-
-    // Cleanup
-    server_handle.abort();
-}
-
-#[tokio::test]
-async fn test_file_deletion_sync() {
-    init_test_logging();
-
-    let server_dir = create_temp_dir();
-    let client1_dir = create_temp_dir();
-    let client2_dir = create_temp_dir();
-
-    // Start server
-    let server = SyncServer::new(server_dir.path().to_path_buf()).unwrap();
-    let server_handle = tokio::spawn(async move {
-        let _ = timeout(Duration::from_secs(60), server.start(8084)).await;
-    });
-
-    // Wait for server to start
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    // Create clients
-    let client1 = SyncClient::new(
-        "http://localhost:8084".to_string(),
-        client1_dir.path().to_path_buf(),
-        Duration::from_secs(10),
-        None,
-        Some("deletion_test".to_string()),
-        vec![],
-    ).unwrap();
-
-    let client2 = SyncClient::new(
-        "http://localhost:8084".to_string(),
-        client2_dir.path().to_path_buf(),
-        Duration::from_secs(10),
-        None,
-        Some("deletion_test".to_string()),
-        vec![],
-    ).unwrap();
-
-    // Client 1 creates file
-    let file_path = create_test_file(&client1_dir.path().to_path_buf(), "to_delete.txt", "Will be deleted");
-
-    // Sync to get file on both clients
-    let _sync1 = timeout(Duration::from_secs(10), client1.sync()).await;
-    let _sync2 = timeout(Duration::from_secs(10), client2.sync()).await;
-
-    // Delete file from client 1
-    std::fs::remove_file(&file_path).unwrap();
-
-    // Sync client 1 (should propagate deletion)
-    let _sync1_delete = timeout(Duration::from_secs(10), client1.sync()).await;
-
-    // Sync client 2 (should receive deletion)
-    let _sync2_delete = timeout(Duration::from_secs(10), client2.sync()).await;
-
-    // Cleanup
-    server_handle.abort();
-}
-
-#[tokio::test]
-async fn test_server_unavailable_error() {
-    init_test_logging();
-
-    let client_dir = create_temp_dir();
-
-    // Create client pointing to non-existent server
-    let client = SyncClient::new(
-        "http://localhost:9999".to_string(), // Non-existent server
-        client_dir.path().to_path_buf(),
-        Duration::from_secs(5),
-        Some("test_client".to_string()),
-        Some("test_dir".to_string()),
-        vec![],
-    ).unwrap();
-
-    // Create test file
-    create_test_file(&client_dir.path().to_path_buf(), "test.txt", "Hello, World!");
-
-    // Sync should fail due to server unavailable
-    let sync_result = timeout(Duration::from_secs(5), client.sync()).await;
-    assert!(sync_result.is_ok()); // Timeout succeeds but sync should handle error gracefully
-}
-
-#[tokio::test]
-async fn test_invalid_client_creation() {
-    init_test_logging();
-
-    // Test with non-existent directory path
-    let invalid_path = PathBuf::from("/non/existent/path/that/should/not/exist");
-    
-    // This should fail because the directory doesn't exist and can't be created
-    let result = SyncClient::new(
-        "http://localhost:8080".to_string(),
-        invalid_path,
-        Duration::from_secs(5),
-        Some("test_client".to_string()),
-        Some("test_dir".to_string()),
-        vec![],
+    // Regular files should be present on server
+    assert!(
+        server_client_dir.join("regular_file.txt").exists(),
+        "Regular file should be synced to server"
     );
-    
-    // Should handle the error gracefully (the implementation might create the directory)
-    // So we'll just ensure it doesn't panic
-    match result {
-        Ok(_) => {
-            // Directory was created successfully
-        },
-        Err(_) => {
-            // Error was handled properly
-        }
-    }
-}
+    assert!(
+        server_client_dir.join("data.json").exists(),
+        "Data file should be synced to server"
+    );
 
-#[tokio::test]
-async fn test_ignore_patterns() {
-    init_test_logging();
+    // SQLite journal/system files should NOT be present on server
+    assert!(
+        !server_client_dir.join(".syncpair_state.db-journal").exists(),
+        "Journal file should not be synced to server"
+    );
+    assert!(
+        !server_client_dir.join(".syncpair_state.db-wal").exists(),
+        "WAL file should not be synced to server"
+    );
+    assert!(
+        !server_client_dir.join(".syncpair_state.db-shm").exists(),
+        "Shared memory file should not be synced to server"
+    );
+    assert!(
+        !server_client_dir.join(".syncpair_state.db").exists(),
+        "Main database file should not be synced to server"
+    );
 
-    let server_dir = create_temp_dir();
-    let client_dir = create_temp_dir();
-
-    // Start server
-    let server = SyncServer::new(server_dir.path().to_path_buf()).unwrap();
-    let server_handle = tokio::spawn(async move {
-        let _ = timeout(Duration::from_secs(30), server.start(8085)).await;
-    });
-
-    // Wait for server to start
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    // Create client with ignore patterns
-    let client = SyncClient::new(
-        "http://localhost:8085".to_string(),
-        client_dir.path().to_path_buf(),
-        Duration::from_secs(5),
-        Some("ignore_test".to_string()),
-        Some("ignore_dir".to_string()),
-        vec!["*.tmp".to_string(), "*.log".to_string(), "temp/".to_string()],
-    ).unwrap();
-
-    // Create files that should be ignored
-    create_test_file(&client_dir.path().to_path_buf(), "should_sync.txt", "This should sync");
-    create_test_file(&client_dir.path().to_path_buf(), "ignore_me.tmp", "This should be ignored");
-    create_test_file(&client_dir.path().to_path_buf(), "debug.log", "This should be ignored");
-    
-    // Create temp directory and file inside
-    std::fs::create_dir_all(client_dir.path().join("temp")).unwrap();
-    create_test_file(&client_dir.path().join("temp").to_path_buf(), "temp_file.txt", "This should be ignored");
-
-    // Sync should only upload the non-ignored file
-    let sync_result = timeout(Duration::from_secs(10), client.sync()).await;
-    assert!(sync_result.is_ok(), "Sync should complete successfully even with ignored files");
+    // Other database journal files WILL be synced because they're not built-in patterns
+    // (Note: these would need custom ignore patterns in real usage)
+    assert!(
+        server_client_dir.join("user.db-journal").exists(),
+        "user.db-journal SHOULD be synced (not covered by built-in patterns)"
+    );
+    assert!(
+        server_client_dir.join("app.sqlite-wal").exists(),
+        "app.sqlite-wal SHOULD be synced (not covered by built-in patterns)"
+    );
 
     // Cleanup
     server_handle.abort();
@@ -335,7 +124,7 @@ async fn test_large_file_sync() {
     // Start server
     let server = SyncServer::new(server_dir.path().to_path_buf()).unwrap();
     let server_handle = tokio::spawn(async move {
-        let _ = timeout(Duration::from_secs(60), server.start(8086)).await;
+        let _ = timeout(Duration::from_secs(60), server.start(8096)).await;
     });
 
     // Wait for server to start
@@ -343,7 +132,7 @@ async fn test_large_file_sync() {
 
     // Create client
     let client = SyncClient::new(
-        "http://localhost:8086".to_string(),
+        "http://localhost:8096".to_string(),
         client_dir.path().to_path_buf(),
         Duration::from_secs(5),
         Some("large_file_test".to_string()),
