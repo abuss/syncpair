@@ -1,8 +1,8 @@
+use std::collections::HashMap;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::path::PathBuf;
 
+/// File information with hash for change detection
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FileInfo {
     pub path: String,
@@ -11,200 +11,36 @@ pub struct FileInfo {
     pub modified: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DeletionInfo {
-    pub path: String,
-    pub deleted_at: DateTime<Utc>,
-}
-
+/// Client state for tracking local files and sync status
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClientState {
     pub files: HashMap<String, FileInfo>,
-    pub deleted_files: HashMap<String, DateTime<Utc>>, // Files deleted with timestamp
+    pub deleted_files: HashMap<String, DateTime<Utc>>,
     pub last_sync: DateTime<Utc>,
 }
 
-// Configuration types for multi-directory support
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ClientConfig {
-    pub client_id: String,
-    pub server: String,
-    #[serde(default)]
-    pub default: Option<DefaultSettings>,
-    pub directories: Vec<DirectoryConfig>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DefaultSettings {
-    #[serde(default)]
-    pub description: Option<String>,
-    #[serde(default)]
-    pub sync_interval_seconds: Option<u64>,
-    #[serde(default)]
-    pub enabled: Option<bool>,
-    #[serde(default)]
-    pub ignore_patterns: Vec<String>,
-    #[serde(default)]
-    pub shared: Option<bool>,
-}
-
-impl Default for DefaultSettings {
+impl Default for ClientState {
     fn default() -> Self {
         Self {
-            description: None,
-            sync_interval_seconds: None,
-            enabled: None,
-            ignore_patterns: Vec::new(),
-            shared: None,
+            files: HashMap::new(),
+            deleted_files: HashMap::new(),
+            last_sync: DateTime::from_timestamp(0, 0).unwrap_or_else(Utc::now),
         }
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DirectoryConfig {
-    pub name: String,
-    pub local_path: PathBuf,
-    #[serde(default)]
-    pub settings: DirectorySettings,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DirectorySettings {
-    #[serde(default)]
-    pub description: Option<String>,
-    #[serde(default)]
-    pub sync_interval_seconds: Option<u64>,
-    #[serde(default)]
-    pub enabled: Option<bool>,
-    #[serde(default)]
-    pub ignore_patterns: Vec<String>,
-    #[serde(default)]
-    pub shared: Option<bool>,
-}
-
-impl Default for DirectorySettings {
-    fn default() -> Self {
-        Self {
-            description: None,
-            sync_interval_seconds: None,
-            enabled: None,
-            ignore_patterns: Vec::new(),
-            shared: None,
-        }
-    }
-}
-
-impl DirectorySettings {
-    /// Merge this DirectorySettings with defaults, where defaults provide fallback values
-    pub fn merge_with_defaults(self, defaults: &DefaultSettings) -> Self {
-        Self {
-            // Apply default description only if current is None
-            description: self.description.or_else(|| defaults.description.clone()),
-
-            // Apply default sync_interval only if current is None
-            sync_interval_seconds: self
-                .sync_interval_seconds
-                .or(defaults.sync_interval_seconds),
-
-            // Apply default enabled only if current is None
-            enabled: self.enabled.or(defaults.enabled),
-
-            // Merge ignore patterns: defaults first, then directory-specific
-            ignore_patterns: if defaults.ignore_patterns.is_empty() {
-                self.ignore_patterns
-            } else {
-                let mut merged = defaults.ignore_patterns.clone();
-                merged.extend(self.ignore_patterns);
-                // Remove duplicates while preserving order
-                let mut unique_patterns = Vec::new();
-                for pattern in merged {
-                    if !unique_patterns.contains(&pattern) {
-                        unique_patterns.push(pattern);
-                    }
-                }
-                unique_patterns
-            },
-
-            // Apply default shared only if current is None
-            shared: self.shared.or(defaults.shared),
-        }
-    }
-
-    /// Get the effective values with struct defaults applied
-    pub fn effective_values(&self) -> EffectiveDirectorySettings {
-        EffectiveDirectorySettings {
-            description: self.description.clone(),
-            sync_interval_seconds: self
-                .sync_interval_seconds
-                .unwrap_or(default_sync_interval()),
-            enabled: self.enabled.unwrap_or(default_true()),
-            ignore_patterns: self.ignore_patterns.clone(),
-            shared: self.shared.unwrap_or(false),
-        }
-    }
-}
-
-/// DirectorySettings with all Option fields resolved to concrete values
-#[derive(Debug, Clone)]
-pub struct EffectiveDirectorySettings {
-    pub description: Option<String>,
-    pub sync_interval_seconds: u64,
-    pub enabled: bool,
-    pub ignore_patterns: Vec<String>,
-    pub shared: bool,
-}
-
-fn default_sync_interval() -> u64 {
-    30
-}
-
-fn default_true() -> bool {
-    true
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UploadRequest {
-    pub file_info: FileInfo,
-    pub content: Vec<u8>,
-    #[serde(default)]
-    pub client_id: Option<String>,
-    #[serde(default)]
-    pub directory: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UploadResponse {
-    pub success: bool,
-    pub message: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Request sent from client to server for synchronization
+#[derive(Debug, Serialize, Deserialize)]
 pub struct SyncRequest {
     pub files: HashMap<String, FileInfo>,
-    pub deleted_files: HashMap<String, DateTime<Utc>>, // Files deleted with timestamp
+    pub deleted_files: HashMap<String, DateTime<Utc>>,
     pub last_sync: DateTime<Utc>,
-    #[serde(default)]
     pub client_id: Option<String>,
-    #[serde(default)]
     pub directory: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DeleteRequest {
-    pub path: String,
-    #[serde(default)]
-    pub client_id: Option<String>,
-    #[serde(default)]
-    pub directory: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DeleteResponse {
-    pub success: bool,
-    pub message: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Response sent from server to client with sync instructions
+#[derive(Debug, Serialize, Deserialize)]
 pub struct SyncResponse {
     pub files_to_upload: Vec<String>,
     pub files_to_download: Vec<FileInfo>,
@@ -212,62 +48,222 @@ pub struct SyncResponse {
     pub conflicts: Vec<FileConflict>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Information about a file conflict
+#[derive(Debug, Serialize, Deserialize)]
 pub struct FileConflict {
     pub path: String,
-    pub client_file: FileInfo,
-    pub server_file: FileInfo,
+    pub client_modified: DateTime<Utc>,
+    pub server_modified: DateTime<Utc>,
+    pub resolution: ConflictResolution,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DownloadRequest {
+/// How a conflict was resolved
+#[derive(Debug, Serialize, Deserialize)]
+pub enum ConflictResolution {
+    ClientWins,
+    ServerWins,
+}
+
+/// Request to upload a file to the server
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UploadRequest {
     pub path: String,
-    #[serde(default)]
+    pub hash: String,
+    pub size: u64,
+    pub modified: DateTime<Utc>,
+    pub content: Vec<u8>,
+    pub client_id: Option<String>,
     pub directory: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Response from server after file upload
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UploadResponse {
+    pub success: bool,
+    pub message: Option<String>,
+}
+
+/// Request to download a file from the server
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DownloadRequest {
+    pub path: String,
+    pub client_id: Option<String>,
+    pub directory: Option<String>,
+}
+
+/// Response from server with file content
+#[derive(Debug, Serialize, Deserialize)]
 pub struct DownloadResponse {
     pub success: bool,
     pub file_info: Option<FileInfo>,
     pub content: Option<Vec<u8>>,
-    pub message: String,
+    pub message: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FileChangeEvent {
+/// Request to delete a file from the server
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DeleteRequest {
     pub path: String,
-    pub change_type: ChangeType,
+    pub client_id: Option<String>,
+    pub directory: Option<String>,
 }
 
+/// Response from server after file deletion
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DeleteResponse {
+    pub success: bool,
+    pub message: Option<String>,
+}
+
+/// Configuration for a single directory in multi-directory setup
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum ChangeType {
-    Created,
-    Modified,
-    Deleted,
+pub struct DirectoryConfig {
+    pub name: String,
+    pub local_path: String,
+    pub settings: DirectorySettings,
 }
 
-pub mod error {
-    use thiserror::Error;
+/// Settings for a directory
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DirectorySettings {
+    pub description: Option<String>,
+    pub shared: Option<bool>,
+    pub sync_interval_seconds: Option<u64>,
+    pub enabled: Option<bool>,
+    pub ignore_patterns: Option<Vec<String>>,
+}
 
-    #[derive(Error, Debug)]
-    pub enum SyncError {
-        #[error("IO error: {0}")]
-        Io(#[from] std::io::Error),
+impl Default for DirectorySettings {
+    fn default() -> Self {
+        Self {
+            description: None,
+            shared: Some(false),
+            sync_interval_seconds: Some(30),
+            enabled: Some(true),
+            ignore_patterns: Some(vec![]),
+        }
+    }
+}
 
-        #[error("Network error: {0}")]
-        Network(#[from] reqwest::Error),
+/// Default configuration applied to all directories
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DefaultConfig {
+    pub description: Option<String>,
+    pub shared: Option<bool>,
+    pub sync_interval_seconds: Option<u64>,
+    pub enabled: Option<bool>,
+    pub ignore_patterns: Option<Vec<String>>,
+}
 
-        #[error("Serialization error: {0}")]
-        Serialization(#[from] serde_json::Error),
+/// Complete client configuration loaded from YAML
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClientConfig {
+    pub client_id: String,
+    pub server: String,
+    pub default: Option<DefaultConfig>,
+    pub directories: Vec<DirectoryConfig>,
+}
 
-        #[error("File not found: {0}")]
-        FileNotFound(String),
+impl DirectorySettings {
+    /// Merge with default configuration, with directory settings taking precedence
+    pub fn merge_with_defaults(&mut self, defaults: &DefaultConfig) {
+        if self.description.is_none() {
+            self.description = defaults.description.clone();
+        }
+        if self.shared.is_none() {
+            self.shared = defaults.shared;
+        }
+        if self.sync_interval_seconds.is_none() {
+            self.sync_interval_seconds = defaults.sync_interval_seconds;
+        }
+        if self.enabled.is_none() {
+            self.enabled = defaults.enabled;
+        }
+        
+        // Merge ignore patterns (defaults + directory-specific)
+        if let Some(default_patterns) = &defaults.ignore_patterns {
+            let mut merged_patterns = default_patterns.clone();
+            if let Some(dir_patterns) = &self.ignore_patterns {
+                merged_patterns.extend(dir_patterns.clone());
+            }
+            // Remove duplicates
+            merged_patterns.sort();
+            merged_patterns.dedup();
+            self.ignore_patterns = Some(merged_patterns);
+        }
+    }
+    
+    /// Get the effective sync interval, defaulting to 30 seconds
+    pub fn effective_sync_interval(&self) -> u64 {
+        self.sync_interval_seconds.unwrap_or(30)
+    }
+    
+    /// Get whether the directory is shared, defaulting to false
+    pub fn is_shared(&self) -> bool {
+        self.shared.unwrap_or(false)
+    }
+    
+    /// Get whether the directory is enabled, defaulting to true
+    pub fn is_enabled(&self) -> bool {
+        self.enabled.unwrap_or(true)
+    }
+    
+    /// Get the ignore patterns, defaulting to empty vector
+    /// Always includes built-in patterns that should never be synced
+    pub fn get_ignore_patterns(&self) -> Vec<String> {
+        let mut patterns = self.ignore_patterns.as_ref().unwrap_or(&vec![]).clone();
+        
+        // Add built-in ignore patterns that should always be excluded
+        let builtin_patterns = vec![
+            ".syncpair_state.db".to_string(),
+        ];
+        
+        patterns.extend(builtin_patterns);
+        
+        // Remove duplicates and sort for consistency
+        patterns.sort();
+        patterns.dedup();
+        
+        patterns
+    }
+}
 
-        #[error("Hash mismatch: {0}")]
-        HashMismatch(String),
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-        #[error("Watch error: {0}")]
-        Watch(String),
+    #[test]
+    fn test_builtin_ignore_patterns() {
+        // Test that .syncpair_state.db is always included in ignore patterns
+        let settings = DirectorySettings::default();
+        let patterns = settings.get_ignore_patterns();
+        assert!(patterns.contains(&".syncpair_state.db".to_string()));
+    }
+
+    #[test]
+    fn test_ignore_patterns_with_user_defined() {
+        // Test that built-in patterns are added to user-defined patterns
+        let settings = DirectorySettings {
+            ignore_patterns: Some(vec!["*.tmp".to_string(), "*.log".to_string()]),
+            ..Default::default()
+        };
+        
+        let patterns = settings.get_ignore_patterns();
+        assert!(patterns.contains(&".syncpair_state.db".to_string()));
+        assert!(patterns.contains(&"*.tmp".to_string()));
+        assert!(patterns.contains(&"*.log".to_string()));
+    }
+
+    #[test]
+    fn test_ignore_patterns_no_duplicates() {
+        // Test that duplicates are removed
+        let settings = DirectorySettings {
+            ignore_patterns: Some(vec![".syncpair_state.db".to_string(), "*.tmp".to_string()]),
+            ..Default::default()
+        };
+        
+        let patterns = settings.get_ignore_patterns();
+        let syncpair_count = patterns.iter().filter(|p| *p == ".syncpair_state.db").count();
+        assert_eq!(syncpair_count, 1, "Should have exactly one .syncpair_state.db pattern");
     }
 }

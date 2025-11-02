@@ -2,34 +2,59 @@
 name = "syncpair"
 version = "0.1.0"
 edition = "2021"
-
-[dependencies]
-tokio = { version = "1.0", features = ["full"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-serde_yaml = "0.9"
-sha2 = "0.10"
-walkdir = "2.3"
-chrono = { version = "0.4", features = ["serde"] }
-reqwest = { version = "0.11", features = ["json"] }
-anyhow = "1.0"
-clap = { version = "4.0", features = ["derive"] }
-thiserror = "1.0"
-warp = "0.3"
-notify = "6.0"
-urlencoding = "2.1"
-glob = "0.3"
-
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-dirs = "5.0"
-duckdb = { version = "1.1" }
-# duckdb = { version = "1.1", features = ["bundled"] }
-
-
-[dev-dependencies]
-tempfile = "3.8"
+description = "Collaborative file synchronization tool"
+license = "MIT"
 
 [[bin]]
 name = "syncpair"
 path = "src/main.rs"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1.0", features = ["full"] }
+
+# HTTP server and client
+warp = "0.3"
+reqwest = { version = "0.12", features = ["json", "multipart"] }
+
+# File system watching
+notify = "6.1"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+
+# Hashing
+sha2 = "0.10"
+
+# Date/time handling
+chrono = { version = "0.4", features = ["serde"] }
+
+# CLI
+clap = { version = "4.0", features = ["derive"] }
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# File system utilities
+walkdir = "2.3"
+urlencoding = "2.1"
+
+# Pattern matching
+glob = "0.3"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Utilities
+dirs = "5.0"
+
+# Database
+rusqlite = { version = "0.31", features = ["bundled"] }
+
+[dev-dependencies]
+tempfile = "3.8"
+tokio-test = "0.4"

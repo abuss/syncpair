@@ -1,545 +1,518 @@
-use anyhow::Result;
-use notify::{Watcher, RecursiveMode, Result as NotifyResult, Event, EventKind};
-use reqwest::Client;
-use std::path::PathBuf;
-use std::sync::mpsc;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
-use tokio::time::{sleep, interval, MissedTickBehavior};
-use tokio::sync::broadcast;
-use tracing::{info, warn, error, debug};
 
-use crate::types::{FileInfo, UploadRequest, UploadResponse, SyncRequest, SyncResponse, DownloadResponse, DeleteRequest, DeleteResponse};
-use crate::utils::{scan_directory_with_patterns, get_file_info, load_client_state_db, save_client_state_db, calculate_file_hash};
+use anyhow::{anyhow, Result};
+use chrono::Utc;
+use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use reqwest::Client as HttpClient;
+use tokio::sync::{mpsc, RwLock};
+use tokio::time::{interval, sleep};
 
-#[derive(Clone)]
-pub struct SimpleClient {
+use crate::types::{
+    ClientConfig, ClientState, DownloadRequest, SyncRequest, UploadRequest,
+};
+use crate::utils::{
+    cleanup_deleted_entries, ensure_directory_exists, expand_path, get_relative_path, load_client_state,
+    resolve_path, save_client_state, scan_directory, should_ignore_file, write_file_atomic,
+};
+
+/// Simple client for synchronizing a single directory
+pub struct SyncClient {
     server_url: String,
     watch_dir: PathBuf,
-    state_db: PathBuf,
-    http_client: Client,
     sync_interval: Duration,
     client_id: Option<String>,
     directory: Option<String>,
     exclude_patterns: Vec<String>,
+    http_client: HttpClient,
+    state: Arc<RwLock<ClientState>>,
 }
 
-impl SimpleClient {
-    pub fn new(server_url: String, watch_dir: PathBuf) -> Self {
-        let state_db = watch_dir.join(".syncpair_state.db");
-        
-        // Create HTTP client with timeouts
-        let http_client = Client::builder()
+impl SyncClient {
+    /// Create a new SyncClient
+    pub fn new(
+        server_url: String,
+        watch_dir: PathBuf,
+        sync_interval: Duration,
+        client_id: Option<String>,
+        directory: Option<String>,
+        exclude_patterns: Vec<String>,
+    ) -> Result<Self> {
+        ensure_directory_exists(&watch_dir)?;
+
+        let http_client = HttpClient::builder()
             .timeout(Duration::from_secs(30))
-            .connect_timeout(Duration::from_secs(10))
-            .build()
-            .expect("Failed to create HTTP client");
- 
-        Self {
+            .build()?;
+
+        // Load existing state or create new
+        let state_db_path = watch_dir.join(".syncpair_state.db");
+        let state = load_client_state(&state_db_path)?;
+
+        Ok(Self {
             server_url,
             watch_dir,
-            state_db,
+            sync_interval,
+            client_id,
+            directory,
+            exclude_patterns,
             http_client,
-            sync_interval: Duration::from_secs(30), // Default: sync every 30 seconds
-            client_id: None,
-            directory: None,
-            exclude_patterns: Vec::new(),
+            state: Arc::new(RwLock::new(state)),
+        })
+    }
+
+    /// Start the client with file watching and periodic sync
+    pub async fn start(&self) -> Result<()> {
+        tracing::info!("Starting SyncClient");
+        tracing::info!("Server: {}", self.server_url);
+        tracing::info!("Watch directory: {}", self.watch_dir.display());
+        tracing::info!("Sync interval: {:?}", self.sync_interval);
+
+        // Initial sync
+        if let Err(e) = self.sync().await {
+            tracing::error!("Initial sync failed: {}", e);
         }
-    }
 
-    pub fn with_sync_interval(mut self, interval: Duration) -> Self {
-        self.sync_interval = interval;
-        self
-    }
+        // Start file watcher
+        let (tx, mut rx) = mpsc::channel(100);
+        let watch_dir = self.watch_dir.clone();
+        let _exclude_patterns = self.exclude_patterns.clone();
 
-    pub fn with_client_id(mut self, client_id: String) -> Self {
-        self.client_id = Some(client_id);
-        self
-    }
+        // Setup file watcher in a separate task
+        let watcher_tx = tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut watcher: RecommendedWatcher = Watcher::new(
+                move |result: Result<Event, notify::Error>| {
+                    if let Ok(event) = result {
+                        if let Err(e) = watcher_tx.blocking_send(event) {
+                            tracing::error!("Failed to send file event: {}", e);
+                        }
+                    }
+                },
+                notify::Config::default(),
+            )
+            .expect("Failed to create file watcher");
 
-    pub fn with_directory(mut self, directory: String) -> Self {
-        self.directory = Some(directory);
-        self
-    }
+            watcher
+                .watch(&watch_dir, RecursiveMode::Recursive)
+                .expect("Failed to start watching directory");
 
-    pub fn with_exclude_patterns(mut self, patterns: Vec<String>) -> Self {
-        self.exclude_patterns = patterns;
-        self
-    }
+            // Keep the watcher alive
+            loop {
+                std::thread::sleep(Duration::from_secs(1));
+            }
+        });
 
-    pub async fn initial_sync(&self) -> Result<()> {
-        if self.directory.is_none() {
-            return Err(anyhow::anyhow!("Directory must be specified for client operations"));
-        }
-        
-        info!("Starting bidirectional sync...");
- 
-        let current_files = scan_directory_with_patterns(&self.watch_dir, &self.exclude_patterns)?;
-        let mut state = load_client_state_db(&self.state_db)?;
- 
-        // Build client file map
-        let mut client_files = std::collections::HashMap::new();
-        for file_info in current_files {
-            client_files.insert(file_info.path.clone(), file_info);
-        }
- 
-        // Detect files that were deleted since last sync
-        let mut newly_deleted_files = std::collections::HashMap::new();
-        for (old_path, _) in &state.files {
-            if !client_files.contains_key(old_path) {
-                info!("🗑️  Detected deletion: {}", old_path);
-                let deletion_time = chrono::Utc::now();
-                newly_deleted_files.insert(old_path.clone(), deletion_time);
+        // Setup periodic sync timer
+        let sync_interval = self.sync_interval;
+        let sync_client = self.clone();
+        tokio::spawn(async move {
+            let mut timer = interval(sync_interval);
+            loop {
+                timer.tick().await;
+                if let Err(e) = sync_client.sync().await {
+                    tracing::error!("Periodic sync failed: {}", e);
+                    // Retry with exponential backoff
+                    sync_client.retry_sync().await;
+                }
+            }
+        });
+
+        // Handle file system events
+        while let Some(event) = rx.recv().await {
+            if let Err(e) = self.handle_file_event(event).await {
+                tracing::error!("Failed to handle file event: {}", e);
             }
         }
- 
-        // Add newly deleted files to the deleted files map
-        state.deleted_files.extend(newly_deleted_files);
- 
-        // Send sync request to server
+
+        Ok(())
+    }
+
+    /// Handle a file system event
+    async fn handle_file_event(&self, event: Event) -> Result<()> {
+        tracing::debug!("File event: {:?}", event);
+
+        // Debounce - wait a bit for file operations to complete
+        sleep(Duration::from_millis(100)).await;
+
+        for path in event.paths {
+            if let Ok(relative_path) = get_relative_path(&path, &self.watch_dir) {
+                // Skip if should be ignored
+                if should_ignore_file(&relative_path, &self.exclude_patterns) {
+                    continue;
+                }
+
+                match event.kind {
+                    EventKind::Create(_) | EventKind::Modify(_) => {
+                        if path.is_file() {
+                            tracing::debug!("File changed: {}", relative_path);
+                            // Trigger sync after a short delay
+                            let client = self.clone();
+                            tokio::spawn(async move {
+                                sleep(Duration::from_millis(500)).await;
+                                if let Err(e) = client.sync().await {
+                                    tracing::error!("Event-triggered sync failed: {}", e);
+                                }
+                            });
+                        }
+                    }
+                    EventKind::Remove(_) => {
+                        tracing::debug!("File deleted: {}", relative_path);
+                        // Mark file as deleted in state
+                        let mut state = self.state.write().await;
+                        state.deleted_files.insert(relative_path.clone(), Utc::now());
+                        state.files.remove(&relative_path);
+
+                        // Save state and trigger sync
+                        let state_db_path = self.watch_dir.join(".syncpair_state.db");
+                        if let Err(e) = save_client_state(&state_db_path, &*state) {
+                            tracing::error!("Failed to save state after deletion: {}", e);
+                        }
+                        drop(state);
+
+                        // Trigger sync
+                        let client = self.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = client.sync().await {
+                                tracing::error!("Delete-triggered sync failed: {}", e);
+                            }
+                        });
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Perform bidirectional synchronization with the server
+    pub async fn sync(&self) -> Result<()> {
+        tracing::debug!("Starting sync");
+
+        // Scan local directory for current files
+        let current_files = scan_directory(&self.watch_dir, &self.exclude_patterns)?;
+
+        // Get current state
+        let mut state = self.state.write().await;
+
+        // Update state with current files and detect deletions
+        for (path, file_info) in &current_files {
+            state.files.insert(path.clone(), file_info.clone());
+        }
+
+        // Detect locally deleted files
+        let mut to_remove = Vec::new();
+        for path in state.files.keys() {
+            if !current_files.contains_key(path) && !state.deleted_files.contains_key(path) {
+                to_remove.push(path.clone());
+            }
+        }
+
+        for path in to_remove {
+            state.files.remove(&path);
+            state.deleted_files.insert(path, Utc::now());
+        }
+
+        // Create sync request
         let sync_request = SyncRequest {
-            files: client_files.clone(),
+            files: state.files.clone(),
             deleted_files: state.deleted_files.clone(),
             last_sync: state.last_sync,
             client_id: self.client_id.clone(),
             directory: self.directory.clone(),
         };
-        
-        let url = format!("{}/sync", self.server_url);
-        let sync_response: SyncResponse = self.http_client
-            .post(&url)
+
+        drop(state); // Release lock before network call
+
+        // Send sync request to server
+        let sync_url = format!("{}/sync", self.server_url);
+        let response = self
+            .http_client
+            .post(&sync_url)
             .json(&sync_request)
             .send()
-            .await?
-            .json()
             .await?;
-        
-        // Handle conflicts first
+
+        if !response.status().is_success() {
+            return Err(anyhow!("Sync request failed: {}", response.status()));
+        }
+
+        let sync_response: crate::types::SyncResponse = response.json().await?;
+
+        tracing::info!(
+            "Sync response: {} to upload, {} to download, {} to delete, {} conflicts",
+            sync_response.files_to_upload.len(),
+            sync_response.files_to_download.len(),
+            sync_response.files_to_delete.len(),
+            sync_response.conflicts.len()
+        );
+
+        // Log conflicts
         for conflict in &sync_response.conflicts {
-            warn!("⚠️  Conflict detected for file: {}", conflict.path);
-            warn!("   Client: modified {}, hash {}", conflict.client_file.modified, &conflict.client_file.hash[..8]);
-            warn!("   Server: modified {}, hash {}", conflict.server_file.modified, &conflict.server_file.hash[..8]);
-            
-            // For now, use a simple strategy: newer file wins, client wins on tie
-            if conflict.server_file.modified > conflict.client_file.modified {
-                info!("   → Downloading server version (newer)");
-                if let Err(e) = self.download_file(&conflict.path).await {
-                    error!("   ✗ Failed to download {}: {}", conflict.path, e);
-                    warn!("   → Keeping client version instead");
-                }
-            } else {
-                info!("   → Uploading client version (newer or same time)");
-                if let Some(file_info) = client_files.get(&conflict.path) {
-                    if let Err(e) = self.upload_file(file_info).await {
-                        error!("   ✗ Failed to upload {}: {}", conflict.path, e);
-                    }
-                }
-            }
+            tracing::warn!(
+                "⚠️  Conflict detected for file: {} (resolution: {:?})",
+                conflict.path,
+                conflict.resolution
+            );
         }
-        
-        // Upload files that need to be uploaded
+
+        // Upload files to server
         for file_path in &sync_response.files_to_upload {
-            if let Some(file_info) = client_files.get(file_path) {
-                debug!("↑ Uploading: {}", file_path);
-                if let Err(e) = self.upload_file(file_info).await {
-                    error!("✗ Failed to upload {}: {}", file_path, e);
-                }
+            if let Err(e) = self.upload_file(file_path).await {
+                tracing::error!("Failed to upload {}: {}", file_path, e);
+            } else {
+                tracing::debug!("✓ Uploaded: {}", file_path);
             }
         }
-        
-        // Download files that need to be downloaded
+
+        // Download files from server
         for file_info in &sync_response.files_to_download {
-            debug!("↓ Downloading: {}", file_info.path);
             if let Err(e) = self.download_file(&file_info.path).await {
-                error!("✗ Failed to download {}: {}", file_info.path, e);
-                warn!("  → File may have been deleted from server or is inaccessible");
+                tracing::error!("Failed to download {}: {}", file_info.path, e);
+            } else {
+                tracing::debug!("✓ Downloaded: {}", file_info.path);
             }
         }
-        
-        // Delete files that need to be deleted
+
+        // Delete files locally
         for file_path in &sync_response.files_to_delete {
-            debug!("🗑️  Deleting: {}", file_path);
-            if let Err(e) = self.delete_file(file_path).await {
-                error!("✗ Failed to delete {}: {}", file_path, e);
+            if let Err(e) = self.delete_file_local(file_path).await {
+                tracing::error!("Failed to delete {}: {}", file_path, e);
+            } else {
+                tracing::debug!("✓ Deleted: {}", file_path);
             }
         }
-        
-        // Update state with all current files (re-scan after downloads)
-        let final_files = scan_directory_with_patterns(&self.watch_dir, &self.exclude_patterns)?;
-        state.files.clear();
-        for file_info in final_files {
-            state.files.insert(file_info.path.clone(), file_info);
-        }
-        
-        // Only clear old deleted files (older than 24 hours) to ensure proper sync across clients
-        let cutoff_time = chrono::Utc::now() - chrono::Duration::hours(24);
-        state.deleted_files.retain(|_, deletion_time| *deletion_time > cutoff_time);
-        
-        state.last_sync = chrono::Utc::now();
-        save_client_state_db(&state, &self.state_db)?;
-        
-        info!("✓ Bidirectional sync completed");
+
+        // Update local state
+        let mut state = self.state.write().await;
+        state.last_sync = Utc::now();
+
+        // Clean up old deletion entries
+        cleanup_deleted_entries(&mut state.deleted_files, 30);
+
+        // Save updated state
+        let state_db_path = self.watch_dir.join(".syncpair_state.db");
+        save_client_state(&state_db_path, &*state)?;
+
+        tracing::debug!("Sync completed successfully");
         Ok(())
     }
 
-    async fn initial_sync_with_retries(&self) -> Result<()> {
-        let max_retries = 5;
-        let mut retry_delay = std::time::Duration::from_secs(1);
-        
-        for attempt in 1..=max_retries {
-            match self.initial_sync().await {
-                Ok(()) => {
-                    return Ok(());
-                }
-                Err(e) => {
-                    if attempt == max_retries {
-                        return Err(anyhow::anyhow!(
-                            "Failed to connect to server after {} attempts. Last error: {}",
-                            max_retries, e
-                        ));
-                    }
-                    
-                    warn!("⚠️  Failed to connect to server (attempt {}/{}): {}", attempt, max_retries, e);
-                    info!("🔄 Retrying in {} seconds...", retry_delay.as_secs());
-                    
-                    tokio::time::sleep(retry_delay).await;
-                    
-                    // Exponential backoff: double the delay, max 30 seconds
-                    retry_delay = std::cmp::min(retry_delay * 2, std::time::Duration::from_secs(30));
-                }
-            }
-        }
-        
-        unreachable!()
-    }
+    /// Upload a file to the server
+    async fn upload_file(&self, file_path: &str) -> Result<()> {
+        let full_path = resolve_path(&self.watch_dir, file_path);
 
-    pub async fn start_watching(&self) -> Result<()> {
-        self.start_watching_with_shutdown(None).await
-    }
+        if !full_path.exists() {
+            return Err(anyhow!("File does not exist: {}", full_path.display()));
+        }
 
-    pub async fn start_watching_with_shutdown(&self, mut shutdown_rx: Option<broadcast::Receiver<()>>) -> Result<()> {
-        info!("Starting file system watcher for: {}", self.watch_dir.display());
-        info!("Periodic sync interval: {} seconds", self.sync_interval.as_secs());
-        
-        // Perform initial sync with retries
-        self.initial_sync_with_retries().await?;
-        
-        // Set up file system watcher
-        let (tx, rx) = mpsc::channel();
-        let mut watcher = notify::recommended_watcher(move |res: NotifyResult<Event>| {
-            if let Ok(event) = res {
-                let _ = tx.send(event);
-            }
-        })?;
-        
-        watcher.watch(&self.watch_dir, RecursiveMode::Recursive)?;
-        
-        // Convert the std::sync::mpsc::Receiver to tokio-compatible
-        let (async_tx, mut async_rx) = tokio::sync::mpsc::unbounded_channel();
-        
-        // Spawn a task to bridge std::sync::mpsc to tokio::sync::mpsc
-        tokio::task::spawn_blocking(move || {
-            while let Ok(event) = rx.recv() {
-                if async_tx.send(event).is_err() {
-                    break; // Channel closed
-                }
-            }
-        });
-        
-        // Set up periodic sync timer
-        let mut sync_timer = interval(self.sync_interval);
-        sync_timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
-        
-        // Process file change events with proper shutdown handling and periodic sync
-        loop {
-            tokio::select! {
-                // Check for shutdown signal
-                shutdown_result = async {
-                    if let Some(ref mut shutdown_rx) = shutdown_rx {
-                        shutdown_rx.recv().await
-                    } else {
-                        // If no shutdown receiver, wait indefinitely
-                        std::future::pending::<Result<(), broadcast::error::RecvError>>().await
-                    }
-                } => {
-                    match shutdown_result {
-                        Ok(_) => {
-                            info!("Received shutdown signal, stopping file watcher...");
-                            break;
-                        }
-                        Err(broadcast::error::RecvError::Closed) => {
-                            info!("Shutdown channel closed, stopping file watcher...");
-                            break;
-                        }
-                        Err(broadcast::error::RecvError::Lagged(_)) => {
-                            warn!("Shutdown signal lagged, stopping file watcher...");
-                            break;
-                        }
-                    }
-                }
-                
-                // Periodic sync trigger
-                _ = sync_timer.tick() => {
-                    debug!("🔄 Performing periodic sync...");
-                    if let Err(e) = self.initial_sync().await {
-                        error!("Error during periodic sync: {}", e);
-                    }
-                }
-                
-                // Check for file system events
-                event = async_rx.recv() => {
-                    match event {
-                        Some(event) => {
-                            if let Err(e) = self.handle_file_event(event).await {
-                                error!("Error handling file event: {}", e);
-                            }
-                        }
-                        None => {
-                            error!("File watcher channel closed");
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-        
-        // Save final state before stopping
-        if let Err(e) = self.save_final_state().await {
-            warn!("Warning: Failed to save final client state: {}", e);
-        }
-        
-        info!("File watcher stopped successfully");
-        Ok(())
-    }
+        let content = std::fs::read(&full_path)?;
+        let file_info = crate::utils::get_file_info(&full_path, file_path)?;
 
-    async fn handle_file_event(&self, event: Event) -> Result<()> {
-        match event.kind {
-            EventKind::Create(_) | EventKind::Modify(_) => {
-                for path in event.paths {
-                    if path.is_file() && self.should_sync_file(&path) {
-                        // Add a small delay to avoid partial file writes
-                        sleep(Duration::from_millis(100)).await;
-                        
-                        if let Err(e) = self.handle_file_change(&path).await {
-                            error!("Error syncing file {}: {}", path.display(), e);
-                        }
-                    }
-                }
-            }
-            EventKind::Remove(_) => {
-                for path in event.paths {
-                    if self.should_sync_file(&path) {
-                        if let Err(e) = self.handle_file_deletion(&path).await {
-                            error!("Error handling file deletion {}: {}", path.display(), e);
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-
-    async fn handle_file_change(&self, file_path: &std::path::Path) -> Result<()> {
-        if let Ok(relative_path) = file_path.strip_prefix(&self.watch_dir) {
-            let relative_path_str = relative_path.to_string_lossy().to_string();
-            
-            let file_info = get_file_info(file_path, &relative_path_str)?;
-            
-            // Check if file actually changed
-            let mut state = load_client_state_db(&self.state_db)?;
-            let should_upload = match state.files.get(&file_info.path) {
-                Some(existing) => existing.hash != file_info.hash,
-                None => true,
-            };
-            
-            if should_upload {
-                debug!("Detected change in: {}", relative_path_str);
-                self.upload_file(&file_info).await?;
-                
-                state.files.insert(file_info.path.clone(), file_info);
-                state.last_sync = chrono::Utc::now();
-                save_client_state_db(&state, &self.state_db)?;
-            }
-        }
-        
-        Ok(())
-    }
-
-    async fn handle_file_deletion(&self, file_path: &std::path::Path) -> Result<()> {
-        if let Ok(relative_path) = file_path.strip_prefix(&self.watch_dir) {
-            let relative_path_str = relative_path.to_string_lossy().to_string();
-            
-            debug!("Detected deletion: {}", relative_path_str);
-            
-            // Load current state
-            let mut state = load_client_state_db(&self.state_db)?;
-            
-            // Check if this file was in our tracked files
-            if state.files.contains_key(&relative_path_str) {
-                let deletion_time = chrono::Utc::now();
-                
-                // Remove from tracked files and add to deleted list with timestamp
-                state.files.remove(&relative_path_str);
-                state.deleted_files.insert(relative_path_str.clone(), deletion_time);
-                
-                // Send delete request to server immediately
-                if let Err(e) = self.send_delete_request(&relative_path_str).await {
-                    error!("Failed to send delete request for {}: {}", relative_path_str, e);
-                } else {
-                    debug!("✓ Deletion synced to server: {}", relative_path_str);
-                }
-                
-                state.last_sync = chrono::Utc::now();
-                save_client_state_db(&state, &self.state_db)?;
-            }
-        }
-        
-        Ok(())
-    }
-
-    async fn upload_file(&self, file_info: &FileInfo) -> Result<()> {
-        let file_path = self.watch_dir.join(&file_info.path);
-        let content = std::fs::read(&file_path)?;
-        
-        // Verify hash before upload
-        let actual_hash = calculate_file_hash(&file_path)?;
-        if actual_hash != file_info.hash {
-            return Err(anyhow::anyhow!("Hash mismatch for file: {}", file_info.path));
-        }
-        
         let upload_request = UploadRequest {
-            file_info: file_info.clone(),
+            path: file_path.to_string(),
+            hash: file_info.hash,
+            size: file_info.size,
+            modified: file_info.modified,
             content,
             client_id: self.client_id.clone(),
             directory: self.directory.clone(),
         };
-        
-        let url = format!("{}/upload", self.server_url);
-        let response: UploadResponse = self.http_client
-            .post(&url)
+
+        let upload_url = format!("{}/upload", self.server_url);
+        let response = self
+            .http_client
+            .post(&upload_url)
             .json(&upload_request)
             .send()
-            .await?
-            .json()
             .await?;
-        
-        if response.success {
-            debug!("✓ Uploaded: {}", file_info.path);
-        } else {
-            return Err(anyhow::anyhow!("Upload failed: {}", response.message));
+
+        if !response.status().is_success() {
+            return Err(anyhow!("Upload failed: {}", response.status()));
         }
-        
+
         Ok(())
     }
 
+    /// Download a file from the server
     async fn download_file(&self, file_path: &str) -> Result<()> {
-        let directory = self.directory.as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Directory must be specified for client operations"))?;
-        let directory_param = format!("?directory={}", urlencoding::encode(directory));
-        let url = format!("{}/download/{}{}", self.server_url, urlencoding::encode(file_path), directory_param);
-        let response: DownloadResponse = self.http_client
-            .get(&url)
-            .send()
-            .await?
-            .json()
-            .await?;
-        
-        if response.success {
-            if let (Some(file_info), Some(content)) = (response.file_info, response.content) {
-                let local_path = self.watch_dir.join(&file_info.path);
-                
-                // Create parent directories if needed
-                if let Some(parent) = local_path.parent() {
-                    std::fs::create_dir_all(parent)?;
-                }
-                
-                // Write the file
-                std::fs::write(&local_path, &content)?;
-                
-                // Verify the hash
-                let actual_hash = calculate_file_hash(&local_path)?;
-                if actual_hash != file_info.hash {
-                    std::fs::remove_file(&local_path)?;
-                    return Err(anyhow::anyhow!("Hash mismatch for downloaded file: {}", file_info.path));
-                }
-                
-                debug!("✓ Downloaded: {}", file_info.path);
-            } else {
-                return Err(anyhow::anyhow!("Download response missing file info or content"));
-            }
-        } else {
-            return Err(anyhow::anyhow!("Download failed: {}", response.message));
-        }
-        
-        Ok(())
-    }
-
-    async fn delete_file(&self, file_path: &str) -> Result<()> {
-        let local_path = self.watch_dir.join(file_path);
-        
-        if local_path.exists() {
-            if local_path.is_file() {
-                std::fs::remove_file(&local_path)?;
-                debug!("✓ Deleted: {}", file_path);
-            } else if local_path.is_dir() {
-                std::fs::remove_dir_all(&local_path)?;
-                debug!("✓ Deleted directory: {}", file_path);
-            }
-        } else {
-            // File already doesn't exist, which is fine
-            debug!("ℹ️  File already deleted: {}", file_path);
-        }
-        
-        Ok(())
-    }
-
-    async fn send_delete_request(&self, file_path: &str) -> Result<()> {
-        let delete_request = DeleteRequest {
+        let download_request = DownloadRequest {
             path: file_path.to_string(),
             client_id: self.client_id.clone(),
             directory: self.directory.clone(),
         };
-        
-        let url = format!("{}/delete", self.server_url);
-        let response: DeleteResponse = self.http_client
-            .post(&url)
-            .json(&delete_request)
+
+        let download_url = format!("{}/download", self.server_url);
+        let response = self
+            .http_client
+            .post(&download_url)
+            .json(&download_request)
             .send()
-            .await?
-            .json()
             .await?;
-        
-        if response.success {
-            Ok(())
-        } else {
-            Err(anyhow::anyhow!("Delete request failed: {}", response.message))
-        }
-    }
 
-    fn should_sync_file(&self, path: &std::path::Path) -> bool {
-        // Skip hidden files and the state database file
-        if let Some(file_name) = path.file_name() {
-            let name = file_name.to_string_lossy();
-            !name.starts_with('.') && name != ".syncpair_state.db"
-        } else {
-            false
+        if !response.status().is_success() {
+            return Err(anyhow!("Download failed: {}", response.status()));
         }
-    }
 
-    async fn save_final_state(&self) -> Result<()> {
-        // Perform one final scan to ensure state is up to date
-        let current_files = scan_directory_with_patterns(&self.watch_dir, &self.exclude_patterns)?;
-        let mut state = load_client_state_db(&self.state_db)?;
-        
-        // Update state with current files
-        for file_info in current_files {
-            state.files.insert(file_info.path.clone(), file_info);
+        let download_response: crate::types::DownloadResponse = response.json().await?;
+
+        if !download_response.success {
+            return Err(anyhow!(
+                "Download failed: {}",
+                download_response.message.unwrap_or_default()
+            ));
         }
-        
-        state.last_sync = chrono::Utc::now();
-        save_client_state_db(&state, &self.state_db)?;
-        debug!("Final client state saved");
+
+        if let (Some(file_info), Some(content)) = (download_response.file_info, download_response.content) {
+            let full_path = resolve_path(&self.watch_dir, file_path);
+            write_file_atomic(&full_path, &content)?;
+
+            // Update local state
+            let mut state = self.state.write().await;
+            state.files.insert(file_path.to_string(), file_info);
+            state.deleted_files.remove(file_path);
+        }
+
         Ok(())
+    }
+
+    /// Delete a file locally
+    async fn delete_file_local(&self, file_path: &str) -> Result<()> {
+        let full_path = resolve_path(&self.watch_dir, file_path);
+
+        if full_path.exists() {
+            std::fs::remove_file(&full_path)?;
+        }
+
+        // Update local state
+        let mut state = self.state.write().await;
+        state.files.remove(file_path);
+        state.deleted_files.insert(file_path.to_string(), Utc::now());
+
+        Ok(())
+    }
+
+    /// Retry sync with exponential backoff
+    async fn retry_sync(&self) {
+        let max_attempts = 5;
+        let mut delay = Duration::from_secs(1);
+
+        for attempt in 1..=max_attempts {
+            tracing::info!("Retry attempt {} of {}", attempt, max_attempts);
+            
+            match self.sync().await {
+                Ok(()) => {
+                    tracing::info!("Sync retry successful");
+                    return;
+                }
+                Err(e) => {
+                    tracing::error!("Sync retry {} failed: {}", attempt, e);
+                    if attempt < max_attempts {
+                        sleep(delay).await;
+                        delay = std::cmp::min(delay * 2, Duration::from_secs(30));
+                    }
+                }
+            }
+        }
+
+        tracing::error!("All sync retry attempts failed");
     }
 }
 
+impl Clone for SyncClient {
+    fn clone(&self) -> Self {
+        Self {
+            server_url: self.server_url.clone(),
+            watch_dir: self.watch_dir.clone(),
+            sync_interval: self.sync_interval,
+            client_id: self.client_id.clone(),
+            directory: self.directory.clone(),
+            exclude_patterns: self.exclude_patterns.clone(),
+            http_client: self.http_client.clone(),
+            state: self.state.clone(),
+        }
+    }
+}
+
+/// Multi-directory client that manages multiple SyncClient instances
+pub struct MultiDirectoryClient {
+    clients: Vec<SyncClient>,
+}
+
+impl MultiDirectoryClient {
+    /// Create a new MultiDirectoryClient from configuration
+    pub fn new(mut config: ClientConfig) -> Result<Self> {
+        // Apply default settings to each directory
+        if let Some(defaults) = &config.default {
+            for dir_config in &mut config.directories {
+                dir_config.settings.merge_with_defaults(defaults);
+            }
+        }
+
+        let mut clients = Vec::new();
+
+        for dir_config in &config.directories {
+            if !dir_config.settings.is_enabled() {
+                tracing::info!("Skipping disabled directory: {}", dir_config.name);
+                continue;
+            }
+
+            let local_path = expand_path(&dir_config.local_path);
+            let sync_interval = Duration::from_secs(dir_config.settings.effective_sync_interval());
+            let ignore_patterns = dir_config.settings.get_ignore_patterns();
+
+            let client_id = if dir_config.settings.is_shared() {
+                None // Shared directories don't use client_id in path
+            } else {
+                Some(config.client_id.clone())
+            };
+
+            let client = SyncClient::new(
+                config.server.clone(),
+                local_path,
+                sync_interval,
+                client_id,
+                Some(dir_config.name.clone()),
+                ignore_patterns,
+            )?;
+
+            clients.push(client);
+        }
+
+        Ok(Self { clients })
+    }
+
+    /// Start all clients concurrently
+    pub async fn start(&self) -> Result<()> {
+        tracing::info!("Starting MultiDirectoryClient with {} directories", self.clients.len());
+
+        let mut handles = Vec::new();
+
+        for (i, client) in self.clients.iter().enumerate() {
+            let client = client.clone();
+            let handle = tokio::spawn(async move {
+                if let Err(e) = client.start().await {
+                    tracing::error!("Client {} failed: {}", i, e);
+                }
+            });
+            handles.push(handle);
+        }
+
+        // Wait for all clients to complete (they shouldn't under normal circumstances)
+        for handle in handles {
+            if let Err(e) = handle.await {
+                tracing::error!("Client task panicked: {}", e);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Load configuration from YAML file
+    pub fn from_config_file(path: &Path) -> Result<Self> {
+        let content = std::fs::read_to_string(path)?;
+        let config: ClientConfig = serde_yaml::from_str(&content)?;
+        Self::new(config)
+    }
+}

@@ -1,0 +1,67 @@
+# SyncPair Client Configuration Example
+# This file shows how to configure the multi-directory sync client
+
+# Client identification (optional)
+# If not provided, the system hostname will be used
+client_id: "my-laptop"
+
+# Server connection settings
+server_url: "http://localhost:8080"
+
+# Retry settings for network operations
+retry_attempts: 3
+retry_delay_ms: 1000
+
+# Sync interval in seconds
+sync_interval_seconds: 30
+
+# Directories to synchronize
+directories:
+  # Personal documents (shared across all clients)
+  - path: "/home/user/Documents"
+    # Directory name on the server (optional, defaults to directory basename)
+    name: "Documents"
+    # Whether this is a shared directory (true) or client-specific (false)
+    shared: true
+    # Files and patterns to ignore during sync
+    exclude_patterns:
+      - "*.tmp"
+      - "*.log"
+      - ".DS_Store"
+      - "node_modules/**"
+      - ".git/**"
+      - "target/**"
+      - "build/**"
+
+  # Project workspace (client-specific)
+  - path: "/home/user/Projects"
+    name: "Projects"
+    shared: false
+    exclude_patterns:
+      - "*.tmp"
+      - ".git/**"
+      - "node_modules/**"
+      - "target/**"
+      - "dist/**"
+      - "build/**"
+      - ".vscode/**"
+      - ".idea/**"
+
+  # Shared team folder
+  - path: "/home/user/Team"
+    name: "TeamShared"
+    shared: true
+    exclude_patterns:
+      - "*.log"
+      - "*.tmp"
+      - ".DS_Store"
+
+# Global exclude patterns (applied to all directories)
+global_exclude_patterns:
+  - "*.swp"
+  - "*.swo"
+  - "*~"
+  - ".syncpair*"
+
+# Logging configuration
+log_level: "info"  # error, warn, info, debug, trace

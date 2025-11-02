@@ -1,411 +1,235 @@
-use anyhow::Result;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
-use warp::Filter;
-use tracing::{info, warn, error, debug};
+use std::sync::Arc;
 
-use crate::types::{FileInfo, UploadRequest, UploadResponse, SyncRequest, SyncResponse, FileConflict, DownloadResponse, DeleteRequest, DeleteResponse};
-use crate::utils::{calculate_file_hash, load_client_state_db, save_client_state_db, init_state_database};
-use crate::types::ClientState;
+use anyhow::Result;
+use chrono::Utc;
+use tokio::sync::RwLock;
+use warp::{Filter, Rejection, Reply};
 
-#[derive(Clone)]
-pub struct SimpleServer {
-    base_storage_dir: PathBuf,
-    // Directory-based shared storage: directory_name -> (files, deleted_files)
-    directory_storage: Arc<Mutex<HashMap<String, (HashMap<String, FileInfo>, HashMap<String, chrono::DateTime<chrono::Utc>>)>>>,
+use crate::types::{
+    ConflictResolution, DeleteRequest, DeleteResponse, DownloadRequest, DownloadResponse,
+    FileConflict, FileInfo, SyncRequest, SyncResponse, UploadRequest, UploadResponse,
+};
+use crate::utils::{
+    ensure_directory_exists, get_file_info, load_client_state, resolve_path,
+    save_client_state, write_file_atomic,
+};
+
+/// SyncPair server for handling file synchronization
+pub struct SyncServer {
+    storage_path: PathBuf,
+    directory_storage: Arc<RwLock<HashMap<String, Arc<RwLock<()>>>>>, // Per-directory locks
 }
 
-impl SimpleServer {
-    pub fn new(storage_dir: PathBuf) -> Result<Self> {
-        let mut directory_storage = HashMap::new();
-        
-        // Load existing directory states from subdirectories
-        if let Ok(entries) = std::fs::read_dir(&storage_dir) {
-            for entry in entries.flatten() {
-                if entry.file_type().map_or(false, |ft| ft.is_dir()) {
-                    if let Some(directory_name) = entry.file_name().to_str() {
-                        let dir_path = entry.path();
-                        let state_db = dir_path.join("server_state.db");
-                        if state_db.exists() {
-                            match load_client_state_db(&state_db) {
-                                Ok(state) => {
-                                    directory_storage.insert(directory_name.to_string(), (state.files, state.deleted_files));
-                                    info!("Loaded state for directory: {}", directory_name);
-                                }
-                                Err(e) => {
-                                    warn!("Failed to load state for directory {}: {}", directory_name, e);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        
-
+impl SyncServer {
+    /// Create a new SyncServer with the specified storage directory
+    pub fn new(storage_path: PathBuf) -> Result<Self> {
+        ensure_directory_exists(&storage_path)?;
         
         Ok(Self {
-            base_storage_dir: storage_dir,
-            directory_storage: Arc::new(Mutex::new(directory_storage)),
+            storage_path,
+            directory_storage: Arc::new(RwLock::new(HashMap::new())),
         })
     }
 
+    /// Start the HTTP server on the specified port
     pub async fn start(&self, port: u16) -> Result<()> {
-        let server = self.clone();
-        let server_for_sync = self.clone();
-        let server_for_download = self.clone();
-        let server_for_delete = self.clone();
-        
-        let upload_route = warp::path("upload")
-            .and(warp::post())
-            .and(warp::body::json())
-            .and_then(move |upload_req: UploadRequest| {
-                let server = server.clone();
-                async move {
-                    match server.handle_upload(upload_req).await {
-                        Ok(response) => Ok::<_, warp::Rejection>(warp::reply::json(&response)),
-                        Err(e) => {
-                            let error_response = UploadResponse {
-                                success: false,
-                                message: format!("Upload failed: {}", e),
-                            };
-                            Ok(warp::reply::json(&error_response))
-                        }
-                    }
-                }
-            });
+        tracing::info!("Starting SyncPair server on port {}", port);
+        tracing::info!("Storage directory: {}", self.storage_path.display());
 
-        let sync_route = warp::path("sync")
-            .and(warp::post())
-            .and(warp::body::json())
-            .and_then(move |sync_req: SyncRequest| {
-                let server = server_for_sync.clone();
-                async move {
-                    match server.handle_sync(sync_req).await {
-                        Ok(response) => Ok::<_, warp::Rejection>(warp::reply::json(&response)),
-                        Err(e) => {
-                            let error_response = SyncResponse {
-                                files_to_upload: vec![],
-                                files_to_download: vec![],
-                                files_to_delete: vec![],
-                                conflicts: vec![],
-                            };
-                            error!("Sync error: {}", e);
-                            Ok(warp::reply::json(&error_response))
-                        }
-                    }
-                }
-            });
+        let server = Arc::new(self.clone());
 
-        let download_route = warp::path!("download" / String)
+        // CORS headers for all responses
+        let cors = warp::cors()
+            .allow_any_origin()
+            .allow_headers(vec!["content-type"])
+            .allow_methods(vec!["GET", "POST", "DELETE", "PUT"]);
+
+        // Health check endpoint
+        let health = warp::path("health")
             .and(warp::get())
-            .and(warp::query::<HashMap<String, String>>())
-            .and_then(move |file_path: String, query: HashMap<String, String>| {
-                let server = server_for_download.clone();
-                async move {
-                    let directory_name = match query.get("directory") {
-                        Some(dir) => dir.clone(),
-                        None => {
-                            let error_response = DownloadResponse {
-                                success: false,
-                                file_info: None,
-                                content: None,
-                                message: "Missing required 'directory' parameter".to_string(),
-                            };
-                            return Ok::<_, warp::Rejection>(warp::reply::json(&error_response));
-                        }
-                    };
-                    match server.handle_download(file_path, directory_name).await {
-                        Ok(response) => Ok::<_, warp::Rejection>(warp::reply::json(&response)),
-                        Err(e) => {
-                            let error_response = DownloadResponse {
-                                success: false,
-                                file_info: None,
-                                content: None,
-                                message: format!("Download failed: {}", e),
-                            };
-                            Ok(warp::reply::json(&error_response))
-                        }
-                    }
-                }
-            });
+            .map(|| warp::reply::with_status("OK", warp::http::StatusCode::OK));
 
-        let delete_route = warp::path("delete")
+        // Sync endpoint - negotiate what files need to be synchronized
+        let sync = warp::path("sync")
             .and(warp::post())
             .and(warp::body::json())
-            .and_then(move |delete_req: DeleteRequest| {
-                let server = server_for_delete.clone();
-                async move {
-                    match server.handle_delete(delete_req).await {
-                        Ok(response) => Ok::<_, warp::Rejection>(warp::reply::json(&response)),
-                        Err(e) => {
-                            let error_response = DeleteResponse {
-                                success: false,
-                                message: format!("Delete failed: {}", e),
-                            };
-                            Ok(warp::reply::json(&error_response))
+            .and(with_server(server.clone()))
+            .and_then(handle_sync);
+
+        // Upload endpoint - receive files from clients
+        let upload = warp::path("upload")
+            .and(warp::post())
+            .and(warp::body::json())
+            .and(with_server(server.clone()))
+            .and_then(handle_upload);
+
+        // Download endpoint - send files to clients
+        let download = warp::path("download")
+            .and(warp::post())
+            .and(warp::body::json())
+            .and(with_server(server.clone()))
+            .and_then(handle_download);
+
+        // Delete endpoint - remove files from server
+        let delete = warp::path("delete")
+            .and(warp::post())
+            .and(warp::body::json())
+            .and(with_server(server.clone()))
+            .and_then(handle_delete);
+
+        let routes = health
+            .or(sync)
+            .or(upload)
+            .or(download)
+            .or(delete)
+            .with(cors)
+            .recover(handle_rejection);
+
+        tracing::info!("Server ready to accept connections");
+        warp::serve(routes).run(([0, 0, 0, 0], port)).await;
+
+        Ok(())
+    }
+
+    /// Get the storage directory path for a specific client/directory combination
+    fn get_directory_path(&self, client_id: Option<&str>, directory: Option<&str>) -> PathBuf {
+        match (client_id, directory) {
+            (Some(client), Some(dir)) => {
+                // Check if this should be a shared directory
+                // For now, assume shared if client_id is empty or matches special pattern
+                if client.is_empty() || directory.unwrap_or("").starts_with("shared_") {
+                    self.storage_path.join(dir)
+                } else {
+                    self.storage_path.join(format!("{}:{}", client, dir))
+                }
+            }
+            (Some(client), None) => self.storage_path.join(format!("{}:default", client)),
+            (None, Some(dir)) => self.storage_path.join(dir),
+            (None, None) => self.storage_path.join("default"),
+        }
+    }
+
+    /// Get or create a lock for a specific directory
+    async fn get_directory_lock(&self, directory_key: &str) -> Arc<RwLock<()>> {
+        let mut storage = self.directory_storage.write().await;
+        storage
+            .entry(directory_key.to_string())
+            .or_insert_with(|| Arc::new(RwLock::new(())))
+            .clone()
+    }
+
+    /// Handle sync request and determine what files need to be synchronized
+    async fn handle_sync_request(&self, request: SyncRequest) -> Result<SyncResponse> {
+        let directory_path = self.get_directory_path(request.client_id.as_deref(), request.directory.as_deref());
+        let directory_key = directory_path.to_string_lossy().to_string();
+        let lock = self.get_directory_lock(&directory_key).await;
+        let _lock = lock.write().await;
+
+        ensure_directory_exists(&directory_path)?;
+
+        // Load server state for this directory
+        let state_db_path = directory_path.join("server_state.db");
+        let mut server_state = load_client_state(&state_db_path)?;
+
+        let mut files_to_upload = Vec::new();
+        let mut files_to_download = Vec::new();
+        let mut files_to_delete = Vec::new();
+        let mut conflicts = Vec::new();
+
+        // Process client files
+        for (path, client_file) in &request.files {
+            match server_state.files.get(path) {
+                Some(server_file) => {
+                    // File exists on both sides
+                    if client_file.hash != server_file.hash {
+                        // Conflict - determine winner based on timestamp
+                        if client_file.modified > server_file.modified {
+                            conflicts.push(FileConflict {
+                                path: path.clone(),
+                                client_modified: client_file.modified,
+                                server_modified: server_file.modified,
+                                resolution: ConflictResolution::ClientWins,
+                            });
+                            files_to_upload.push(path.clone());
+                        } else {
+                            conflicts.push(FileConflict {
+                                path: path.clone(),
+                                client_modified: client_file.modified,
+                                server_modified: server_file.modified,
+                                resolution: ConflictResolution::ServerWins,
+                            });
+                            files_to_download.push(server_file.clone());
                         }
                     }
+                    // If hashes match, no action needed
                 }
-            });
-
-        let routes = upload_route
-            .or(sync_route)
-            .or(download_route)
-            .or(delete_route)
-            .with(warp::cors().allow_any_origin().allow_methods(vec!["GET", "POST", "DELETE"]).allow_headers(vec!["content-type"]));
-
-        info!("Server starting on http://0.0.0.0:{}", port);
-        
-        // Create a graceful shutdown future
-        let shutdown = async {
-            tokio::signal::ctrl_c()
-                .await
-                .expect("Failed to install CTRL+C signal handler");
-            info!("\nShutdown signal received, stopping server...");
-        };
-
-        // Start server with graceful shutdown
-        let (_, server_future) = warp::serve(routes)
-            .bind_with_graceful_shutdown(([0, 0, 0, 0], port), shutdown);
-        
-        server_future.await;
-        
-        // Save final state before shutdown
-        if let Err(e) = self.save_all_states() {
-            warn!("Warning: Failed to save server state during shutdown: {}", e);
-        }
-        
-        info!("Server stopped successfully!");
-        Ok(())
-    }
-
-
-
-    fn get_directory_storage_dir(&self, directory_name: &str) -> PathBuf {
-        self.base_storage_dir.join(directory_name)
-    }
-
-    fn ensure_directory_exists(&self, directory_name: &str) -> Result<()> {
-        let dir_path = self.get_directory_storage_dir(directory_name);
-        std::fs::create_dir_all(&dir_path)?;
-        
-        // Initialize directory storage if it doesn't exist
-        let mut directory_storage = self.directory_storage.lock().unwrap();
-        if !directory_storage.contains_key(directory_name) {
-            directory_storage.insert(directory_name.to_string(), (HashMap::new(), HashMap::new()));
-            info!("Created new shared directory: {}", directory_name);
-        }
-        
-        Ok(())
-    }
-
-    async fn handle_upload(&self, upload_req: UploadRequest) -> Result<UploadResponse> {
-        let directory_name = upload_req.directory
-            .ok_or_else(|| anyhow::anyhow!("Missing required 'directory' field in upload request"))?;
-        self.ensure_directory_exists(&directory_name)?;
-        
-        let directory_storage_dir = self.get_directory_storage_dir(&directory_name);
-        let file_path = directory_storage_dir.join(&upload_req.file_info.path);
-        
-        // Create parent directories if they don't exist
-        if let Some(parent) = file_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        
-        // Write file content
-        std::fs::write(&file_path, &upload_req.content)?;
-        
-        // Verify file hash
-        let calculated_hash = calculate_file_hash(&file_path)?;
-        if calculated_hash != upload_req.file_info.hash {
-            return Ok(UploadResponse {
-                success: false,
-                message: format!("Hash mismatch: expected {}, got {}", upload_req.file_info.hash, calculated_hash),
-            });
-        }
-        
-        // Update directory state
-        let state_modified = {
-            let mut directory_storage = self.directory_storage.lock().unwrap();
-            let (directory_files, _) = directory_storage.get_mut(&directory_name).unwrap();
-            
-            let old_file = directory_files.get(&upload_req.file_info.path);
-            let is_new_or_changed = old_file.map_or(true, |old| old.hash != upload_req.file_info.hash);
-            
-            if is_new_or_changed {
-                directory_files.insert(upload_req.file_info.path.clone(), upload_req.file_info.clone());
-                true
-            } else {
-                false
+                None => {
+                    // File only exists on client
+                    // Check if it was deleted on server after client's last sync
+                    if let Some(deleted_time) = server_state.deleted_files.get(path) {
+                        if *deleted_time > request.last_sync {
+                            // File was deleted on server after client's last sync
+                            files_to_delete.push(path.clone());
+                        } else {
+                            // Client created file after deletion, upload it
+                            files_to_upload.push(path.clone());
+                        }
+                    } else {
+                        // New file on client, upload it
+                        files_to_upload.push(path.clone());
+                    }
+                }
             }
-        };
-        
-        if state_modified {
-            self.atomic_save_directory_state(&directory_name)?;
-            info!("📁 Uploaded to directory '{}': {}", directory_name, upload_req.file_info.path);
         }
-        
-        Ok(UploadResponse {
-            success: true,
-            message: format!("File uploaded successfully to directory '{}'", directory_name),
-        })
-    }
 
-    async fn handle_sync(&self, sync_req: SyncRequest) -> Result<SyncResponse> {
-        let directory_name = sync_req.directory
-            .ok_or_else(|| anyhow::anyhow!("Missing required 'directory' field in sync request"))?;
-        
-        // Create directory on filesystem first
-        let directory_storage_dir = self.get_directory_storage_dir(&directory_name);
-        std::fs::create_dir_all(&directory_storage_dir)?;
-        
-        // Use a single, scoped lock to ensure atomicity and avoid deadlock
-        let (files_to_upload, files_to_download, files_to_delete, conflicts) = {
-            let mut directory_storage = self.directory_storage.lock().unwrap();
-            
-            // Initialize directory storage if it doesn't exist (within the same lock)
-            if !directory_storage.contains_key(&directory_name) {
-                directory_storage.insert(directory_name.clone(), (HashMap::new(), HashMap::new()));
-                info!("Created new shared directory: {}", directory_name);
-            }
-            
-            let (directory_files, directory_deleted_files) = directory_storage.get_mut(&directory_name).unwrap();
-            
-            // Clean up old deletion records (older than 7 days) to prevent unlimited growth
-            let cutoff_time = chrono::Utc::now() - chrono::Duration::days(7);
-            directory_deleted_files.retain(|_, deletion_time| *deletion_time > cutoff_time);
-            
-            let client_files = sync_req.files;
-            let client_deleted_files = sync_req.deleted_files;
-            
-            let mut files_to_upload = Vec::new();
-            let mut files_to_download = Vec::new();
-            let mut files_to_delete = Vec::new();
-            let mut conflicts = Vec::new();
-            let mut state_modified = false;
-
-            // Handle files that the client has deleted with timestamp comparison
-            for (deleted_path, deletion_time) in &client_deleted_files {
-                if let Some(directory_file) = directory_files.get(deleted_path) {
-                    // Compare deletion time with directory file modification time
-                    if *deletion_time > directory_file.modified {
-                        info!("📁 Client deleted file from directory '{}' (newer than server): {}", directory_name, deleted_path);
+        // Check for files that exist on server but not on client
+        let mut files_to_remove = Vec::new();
+        for (path, server_file) in &server_state.files {
+            if !request.files.contains_key(path) {
+                // File exists on server but not on client
+                // Check if client deleted it
+                if let Some(deleted_time) = request.deleted_files.get(path) {
+                    if *deleted_time > server_file.modified {
+                        // Client deleted file after it was modified on server
+                        // Mark for deletion from server
+                        files_to_remove.push((path.clone(), *deleted_time));
                         
-                        // Delete the file from directory storage
-                        let directory_file_path = directory_storage_dir.join(deleted_path);
-                        if directory_file_path.exists() {
-                            if let Err(e) = std::fs::remove_file(&directory_file_path) {
-                                error!("Failed to delete {} from directory '{}' storage: {}", deleted_path, directory_name, e);
-                                continue;
-                            } else {
-                                debug!("✓ Deleted from directory '{}' storage: {}", directory_name, deleted_path);
+                        // Remove physical file
+                        let file_path = resolve_path(&directory_path, path);
+                        if file_path.exists() {
+                            if let Err(e) = std::fs::remove_file(&file_path) {
+                                tracing::warn!("Failed to delete file {}: {}", file_path.display(), e);
                             }
                         }
-                        
-                        // Remove from directory state and add to deleted files with timestamp
-                        directory_files.remove(deleted_path);
-                        directory_deleted_files.insert(deleted_path.clone(), *deletion_time);
-                        state_modified = true;
                     } else {
-                        warn!("⚠️  Client deletion ignored in directory '{}': server file {} is newer", directory_name, deleted_path);
-                        // Directory file is newer, client should get the update
-                        files_to_download.push(directory_file.clone());
-                    }
-                } else if let Some(directory_deletion_time) = directory_deleted_files.get(deleted_path) {
-                    // File was already deleted in directory, update timestamp if client deletion is newer
-                    if *deletion_time > *directory_deletion_time {
-                        directory_deleted_files.insert(deleted_path.clone(), *deletion_time);
-                        state_modified = true;
+                        // Server file is newer, download it
+                        files_to_download.push(server_file.clone());
                     }
                 } else {
-                    // File doesn't exist in directory, just record the deletion
-                    directory_deleted_files.insert(deleted_path.clone(), *deletion_time);
-                    state_modified = true;
+                    // Client doesn't have file, download it
+                    files_to_download.push(server_file.clone());
                 }
             }
+        }
 
-            // Handle files that the directory has deleted (client should delete them)
-            let mut deletions_to_remove = Vec::new();
-            for (deleted_path, deletion_time) in directory_deleted_files.iter() {
-                if let Some(client_file) = client_files.get(deleted_path) {
-                    // Compare deletion time with client file modification time
-                    if *deletion_time > client_file.modified {
-                        files_to_delete.push(deleted_path.clone());
-                        debug!("📁 Client should delete (directory deleted it): {}", deleted_path);
-                    } else {
-                        warn!("⚠️  Directory '{}' deletion ignored: client file {} is newer", directory_name, deleted_path);
-                        // Client file is newer, should be uploaded
-                        files_to_upload.push(deleted_path.clone());
-                        // Mark for removal from deleted files since client has newer version
-                        deletions_to_remove.push(deleted_path.clone());
-                        state_modified = true;
-                    }
-                }
-            }
-            
-            // Remove obsolete deletions
-            for path in deletions_to_remove {
-                directory_deleted_files.remove(&path);
-            }
+        // Remove marked files from server state
+        for (path, deleted_time) in files_to_remove {
+            server_state.files.remove(&path);
+            server_state.deleted_files.insert(path, deleted_time);
+        }
 
-            // Compare client files with directory files
-            for (file_path, client_file) in &client_files {
-                // Skip if file was deleted
-                if directory_deleted_files.contains_key(file_path) {
-                    continue;
-                }
-                
-                if let Some(directory_file) = directory_files.get(file_path) {
-                    // File exists in both client and directory - check for conflicts
-                    if client_file.hash != directory_file.hash {
-                        if client_file.modified > directory_file.modified {
-                            // Client file is newer
-                            files_to_upload.push(file_path.clone());
-                            debug!("📁 Client file is newer in directory '{}': {}", directory_name, file_path);
-                        } else if directory_file.modified > client_file.modified {
-                            // Directory file is newer
-                            files_to_download.push(directory_file.clone());
-                            debug!("📁 Directory '{}' file is newer: {}", directory_name, file_path);
-                        } else {
-                            // Same timestamp but different content - conflict
-                            conflicts.push(FileConflict {
-                                path: file_path.clone(),
-                                client_file: client_file.clone(),
-                                server_file: directory_file.clone(),
-                            });
-                            files_to_download.push(directory_file.clone());
-                            warn!("⚠️  Conflict in directory '{}' resolved (server wins): {}", directory_name, file_path);
-                        }
-                    }
-                } else {
-                    // File exists only on client
-                    files_to_upload.push(file_path.clone());
-                    debug!("📁 New file from client for directory '{}': {}", directory_name, file_path);
-                }
-            }
+        // Save updated server state
+        save_client_state(&state_db_path, &server_state)?;
 
-            // Check for files that exist only in directory (client should download them)
-            for (file_path, directory_file) in directory_files.iter() {
-                if !client_files.contains_key(file_path) && !client_deleted_files.contains_key(file_path) {
-                    files_to_download.push(directory_file.clone());
-                    debug!("📁 New file from directory '{}' for client: {}", directory_name, file_path);
-                }
-            }
-
-            // Save state if modified (while still holding the lock)
-            if state_modified {
-                if let Err(e) = self.save_directory_state_with_lock(&directory_name, directory_files, directory_deleted_files) {
-                    error!("Failed to save directory state for '{}': {}", directory_name, e);
-                }
-            }
-
-            (files_to_upload, files_to_download, files_to_delete, conflicts)
-        };
-
-        info!("📁 Sync completed for directory '{}': {} to upload, {} to download, {} to delete, {} conflicts", 
-              directory_name, files_to_upload.len(), files_to_download.len(), files_to_delete.len(), conflicts.len());
+        tracing::info!(
+            "Sync request processed: {} to upload, {} to download, {} to delete, {} conflicts",
+            files_to_upload.len(),
+            files_to_download.len(),
+            files_to_delete.len(),
+            conflicts.len()
+        );
 
         Ok(SyncResponse {
             files_to_upload,
@@ -415,131 +239,204 @@ impl SimpleServer {
         })
     }
 
-    async fn handle_download(&self, file_path: String, directory_name: String) -> Result<DownloadResponse> {
-        // URL decode the file path since the client URL-encodes it
-        let decoded_file_path = urlencoding::decode(&file_path)
-            .map_err(|e| anyhow::anyhow!("Failed to decode file path '{}': {}", file_path, e))?
-            .into_owned();
-            
-        let directory_storage_dir = self.get_directory_storage_dir(&directory_name);
-        let full_file_path = directory_storage_dir.join(&decoded_file_path);
-        
-        if !full_file_path.exists() {
+    /// Handle file upload from client
+    async fn handle_upload_request(&self, request: UploadRequest) -> Result<UploadResponse> {
+        let directory_path = self.get_directory_path(request.client_id.as_deref(), request.directory.as_deref());
+        let directory_key = directory_path.to_string_lossy().to_string();
+        let lock = self.get_directory_lock(&directory_key).await;
+        let _lock = lock.write().await;
+
+        ensure_directory_exists(&directory_path)?;
+
+        // Write file to disk
+        let file_path = resolve_path(&directory_path, &request.path);
+        write_file_atomic(&file_path, &request.content)?;
+
+        // Update server state
+        let state_db_path = directory_path.join("server_state.db");
+        let mut server_state = load_client_state(&state_db_path)?;
+
+        let file_info = FileInfo {
+            path: request.path.clone(),
+            hash: request.hash,
+            size: request.size,
+            modified: request.modified,
+        };
+
+        server_state.files.insert(request.path.clone(), file_info);
+        server_state.last_sync = Utc::now();
+
+        save_client_state(&state_db_path, &server_state)?;
+
+        tracing::info!("File uploaded: {}", request.path);
+
+        Ok(UploadResponse {
+            success: true,
+            message: Some("File uploaded successfully".to_string()),
+        })
+    }
+
+    /// Handle file download request from client
+    async fn handle_download_request(&self, request: DownloadRequest) -> Result<DownloadResponse> {
+        let directory_path = self.get_directory_path(request.client_id.as_deref(), request.directory.as_deref());
+        let directory_key = directory_path.to_string_lossy().to_string();
+        let lock = self.get_directory_lock(&directory_key).await;
+        let _lock = lock.read().await;
+
+        let file_path = resolve_path(&directory_path, &request.path);
+
+        if !file_path.exists() {
             return Ok(DownloadResponse {
                 success: false,
                 file_info: None,
                 content: None,
-                message: format!("File not found in directory '{}': {}", directory_name, decoded_file_path),
+                message: Some("File not found".to_string()),
             });
         }
-        
-        let content = std::fs::read(&full_file_path)?;
-        let file_hash = calculate_file_hash(&full_file_path)?;
-        let metadata = std::fs::metadata(&full_file_path)?;
-        let modified = metadata.modified()?.into();
-        
-        let file_info = FileInfo {
-            path: decoded_file_path.clone(),
-            hash: file_hash,
-            size: metadata.len(),
-            modified,
-        };
-        
-        info!("📁 Downloaded from directory '{}': {}", directory_name, decoded_file_path);
-        
+
+        // Read file content
+        let content = std::fs::read(&file_path)?;
+
+        // Get file info
+        let file_info = get_file_info(&file_path, &request.path)?;
+
+        tracing::info!("File downloaded: {}", request.path);
+
         Ok(DownloadResponse {
             success: true,
             file_info: Some(file_info),
             content: Some(content),
-            message: format!("File downloaded successfully from directory '{}'", directory_name),
+            message: None,
         })
     }
 
-    async fn handle_delete(&self, delete_req: DeleteRequest) -> Result<DeleteResponse> {
-        let directory_name = delete_req.directory
-            .ok_or_else(|| anyhow::anyhow!("Missing required 'directory' field in delete request"))?;
-        self.ensure_directory_exists(&directory_name)?;
-        
-        let directory_storage_dir = self.get_directory_storage_dir(&directory_name);
-        let file_path = directory_storage_dir.join(&delete_req.path);
-        
-        // Delete the physical file if it exists
+    /// Handle file deletion request from client
+    async fn handle_delete_request(&self, request: DeleteRequest) -> Result<DeleteResponse> {
+        let directory_path = self.get_directory_path(request.client_id.as_deref(), request.directory.as_deref());
+        let directory_key = directory_path.to_string_lossy().to_string();
+        let lock = self.get_directory_lock(&directory_key).await;
+        let _lock = lock.write().await;
+
+        let file_path = resolve_path(&directory_path, &request.path);
+
+        // Remove file from disk if it exists
         if file_path.exists() {
             std::fs::remove_file(&file_path)?;
         }
-        
-        // Update directory state
-        let state_modified = {
-            let mut directory_storage = self.directory_storage.lock().unwrap();
-            let (directory_files, directory_deleted_files) = directory_storage.get_mut(&directory_name).unwrap();
-            
-            let was_present = directory_files.remove(&delete_req.path).is_some();
-            directory_deleted_files.insert(delete_req.path.clone(), chrono::Utc::now());
-            
-            was_present
-        };
-        
-        if state_modified {
-            self.atomic_save_directory_state(&directory_name)?;
-            info!("📁 Deleted from directory '{}': {}", directory_name, delete_req.path);
-        }
-        
+
+        // Update server state
+        let state_db_path = directory_path.join("server_state.db");
+        let mut server_state = load_client_state(&state_db_path)?;
+
+        server_state.files.remove(&request.path);
+        server_state.deleted_files.insert(request.path.clone(), Utc::now());
+        server_state.last_sync = Utc::now();
+
+        save_client_state(&state_db_path, &server_state)?;
+
+        tracing::info!("File deleted: {}", request.path);
+
         Ok(DeleteResponse {
             success: true,
-            message: format!("File deleted successfully from directory '{}'", directory_name),
+            message: Some("File deleted successfully".to_string()),
         })
     }
+}
 
-    fn atomic_save_directory_state(&self, directory_name: &str) -> Result<()> {
-        let directory_storage_dir = self.get_directory_storage_dir(directory_name);
-        let state_db = directory_storage_dir.join("server_state.db");
-        
-        // Initialize the database if it doesn't exist
-        if !state_db.exists() {
-            init_state_database(&state_db)?;
+impl Clone for SyncServer {
+    fn clone(&self) -> Self {
+        Self {
+            storage_path: self.storage_path.clone(),
+            directory_storage: self.directory_storage.clone(),
         }
-        
-        let directory_storage = self.directory_storage.lock().unwrap();
-        if let Some((directory_files, directory_deleted_files)) = directory_storage.get(directory_name) {
-            let state = ClientState {
-                files: directory_files.clone(),
-                deleted_files: directory_deleted_files.clone(),
-                last_sync: chrono::Utc::now(),
-            };
-            
-            save_client_state_db(&state, &state_db)?;
-        }
-        
-        Ok(())
     }
+}
 
-    fn save_directory_state_with_lock(&self, directory_name: &str, directory_files: &HashMap<String, FileInfo>, directory_deleted_files: &HashMap<String, chrono::DateTime<chrono::Utc>>) -> Result<()> {
-        let directory_storage_dir = self.get_directory_storage_dir(directory_name);
-        let state_db = directory_storage_dir.join("server_state.db");
-        
-        // Initialize the database if it doesn't exist
-        if !state_db.exists() {
-            init_state_database(&state_db)?;
+// Warp filter helpers
+
+fn with_server(
+    server: Arc<SyncServer>,
+) -> impl Filter<Extract = (Arc<SyncServer>,), Error = std::convert::Infallible> + Clone {
+    warp::any().map(move || server.clone())
+}
+
+// Handler functions
+
+async fn handle_sync(
+    request: SyncRequest,
+    server: Arc<SyncServer>,
+) -> Result<impl Reply, Rejection> {
+    match server.handle_sync_request(request).await {
+        Ok(response) => Ok(warp::reply::json(&response)),
+        Err(e) => {
+            tracing::error!("Sync error: {}", e);
+            Err(warp::reject::custom(ServerError(e.to_string())))
         }
-        
-        let state = ClientState {
-            files: directory_files.clone(),
-            deleted_files: directory_deleted_files.clone(),
-            last_sync: chrono::Utc::now(),
-        };
-        
-        save_client_state_db(&state, &state_db)?;
-        Ok(())
     }
+}
 
-    // Helper methods for directory storage management
-    fn save_all_states(&self) -> Result<()> {
-        let directory_storage = self.directory_storage.lock().unwrap();
-        for (directory_name, (directory_files, directory_deleted_files)) in directory_storage.iter() {
-            if let Err(e) = self.save_directory_state_with_lock(directory_name, directory_files, directory_deleted_files) {
-                warn!("Failed to save state for directory {}: {}", directory_name, e);
-            }
+async fn handle_upload(
+    request: UploadRequest,
+    server: Arc<SyncServer>,
+) -> Result<impl Reply, Rejection> {
+    match server.handle_upload_request(request).await {
+        Ok(response) => Ok(warp::reply::json(&response)),
+        Err(e) => {
+            tracing::error!("Upload error: {}", e);
+            Err(warp::reject::custom(ServerError(e.to_string())))
         }
-        Ok(())
+    }
+}
+
+async fn handle_download(
+    request: DownloadRequest,
+    server: Arc<SyncServer>,
+) -> Result<impl Reply, Rejection> {
+    match server.handle_download_request(request).await {
+        Ok(response) => Ok(warp::reply::json(&response)),
+        Err(e) => {
+            tracing::error!("Download error: {}", e);
+            Err(warp::reject::custom(ServerError(e.to_string())))
+        }
+    }
+}
+
+async fn handle_delete(
+    request: DeleteRequest,
+    server: Arc<SyncServer>,
+) -> Result<impl Reply, Rejection> {
+    match server.handle_delete_request(request).await {
+        Ok(response) => Ok(warp::reply::json(&response)),
+        Err(e) => {
+            tracing::error!("Delete error: {}", e);
+            Err(warp::reject::custom(ServerError(e.to_string())))
+        }
+    }
+}
+
+// Error handling
+
+#[derive(Debug)]
+struct ServerError(String);
+
+impl warp::reject::Reject for ServerError {}
+
+async fn handle_rejection(err: Rejection) -> Result<impl Reply, std::convert::Infallible> {
+    if let Some(ServerError(message)) = err.find::<ServerError>() {
+        Ok(warp::reply::with_status(
+            format!("Server error: {}", message),
+            warp::http::StatusCode::INTERNAL_SERVER_ERROR,
+        ))
+    } else if err.is_not_found() {
+        Ok(warp::reply::with_status(
+            "Not found".to_string(),
+            warp::http::StatusCode::NOT_FOUND,
+        ))
+    } else {
+        tracing::error!("Unhandled rejection: {:?}", err);
+        Ok(warp::reply::with_status(
+            "Internal server error".to_string(),
+            warp::http::StatusCode::INTERNAL_SERVER_ERROR,
+        ))
     }
 }

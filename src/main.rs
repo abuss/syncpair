@@ -1,28 +1,26 @@
-use clap::{Parser, Subcommand};
-use std::fs::OpenOptions;
 use std::path::PathBuf;
 
-use tokio::signal;
-use tokio::sync::broadcast;
-use tracing::{error, info, Level};
-use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use anyhow::Result;
+use clap::{Parser, Subcommand};
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use syncpair::multi_client::MultiDirectoryClient;
-use syncpair::server::SimpleServer;
+use syncpair::{MultiDirectoryClient, SyncServer};
 
 #[derive(Parser)]
-#[command(author, version, about = "A bidirectional file synchronization tool", long_about = None)]
-struct Args {
-    /// Log level: error, warn, info, debug, trace
-    #[arg(short = 'v', long, default_value = "info", help = "Set log level")]
+#[command(name = "syncpair")]
+#[command(about = "Collaborative file synchronization tool")]
+#[command(version = "0.1.0")]
+struct Cli {
+    /// Set log level: error, warn, info, debug, trace
+    #[arg(long, default_value = "info")]
     log_level: String,
 
     /// Write logs to file instead of stdout
-    #[arg(short = 'l', long, help = "Write logs to file")]
+    #[arg(long)]
     log_file: Option<PathBuf>,
 
-    /// Quiet mode - suppress all output except errors
-    #[arg(short = 'q', long, help = "Quiet mode - only show errors")]
+    /// Quiet mode - only show errors
+    #[arg(long)]
     quiet: bool,
 
     #[command(subcommand)]
@@ -33,181 +31,92 @@ struct Args {
 enum Commands {
     /// Start the server to receive file uploads
     Server {
-        #[arg(
-            short,
-            long,
-            default_value = "8080",
-            help = "Port to run the server on"
-        )]
+        /// Port to listen on
+        #[arg(short, long, default_value = "8080")]
         port: u16,
-        #[arg(short, long, help = "Directory to store uploaded files")]
+
+        /// Storage directory for files
+        #[arg(short, long, default_value = "./server_storage")]
         storage_dir: PathBuf,
     },
-    /// Start the client using a YAML configuration file for multi-directory sync
+    /// Start multi-directory client using YAML configuration
     Client {
-        #[arg(short, long, help = "Path to the YAML configuration file")]
+        /// YAML configuration file path
+        #[arg(short, long)]
         file: PathBuf,
     },
 }
 
-fn init_logging(
-    log_level: &str,
-    log_file: Option<&PathBuf>,
-    quiet: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let level = if quiet {
-        Level::ERROR
-    } else {
-        match log_level.to_lowercase().as_str() {
-            "error" => Level::ERROR,
-            "warn" => Level::WARN,
-            "info" => Level::INFO,
-            "debug" => Level::DEBUG,
-            "trace" => Level::TRACE,
-            _ => Level::INFO,
+#[tokio::main]
+async fn main() -> Result<()> {
+    let cli = Cli::parse();
+
+    // Setup logging
+    setup_logging(&cli)?;
+
+    // Log startup information
+    tracing::info!("SyncPair v{} starting", env!("CARGO_PKG_VERSION"));
+
+    match &cli.command {
+        Commands::Server { port, storage_dir } => {
+            tracing::info!("Starting server mode");
+            
+            let server = SyncServer::new(storage_dir.clone())?;
+            server.start(*port).await?;
         }
-    };
-
-    let filter = EnvFilter::from_default_env().add_directive(level.into());
-
-    if let Some(log_file_path) = log_file {
-        // Log to file
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(log_file_path)?;
-
-        tracing_subscriber::registry()
-            .with(filter)
-            .with(fmt::layer().with_writer(file).with_ansi(false))
-            .init();
-    } else {
-        // Log to stdout/stderr
-        tracing_subscriber::registry()
-            .with(filter)
-            .with(fmt::layer().with_writer(std::io::stderr))
-            .init();
+        Commands::Client { file } => {
+            tracing::info!("Starting client mode with config: {}", file.display());
+            
+            let client = MultiDirectoryClient::from_config_file(file)?;
+            client.start().await?;
+        }
     }
 
     Ok(())
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args = Args::parse();
+fn setup_logging(cli: &Cli) -> Result<()> {
+    let log_level = if cli.quiet {
+        "error"
+    } else {
+        &cli.log_level
+    };
 
-    // Initialize logging
-    init_logging(&args.log_level, args.log_file.as_ref(), args.quiet)?;
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| {
+            format!("syncpair={},warn", log_level).into()
+        });
 
-    match args.command {
-        Commands::Server { port, storage_dir } => {
-            info!(
-                "Starting syncpair server on port {} with storage directory: {}",
-                port,
-                storage_dir.display()
-            );
+    let fmt_layer = tracing_subscriber::fmt::layer()
+        .with_target(true)
+        .with_thread_ids(false)
+        .with_thread_names(false)
+        .with_file(false)
+        .with_line_number(false);
 
-            let server = SimpleServer::new(storage_dir)?;
-            server.start(port).await?;
+    if let Some(log_file) = &cli.log_file {
+        // Log to file
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_file)?;
+
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(fmt_layer.with_writer(file))
+            .init();
+
+        // Also log startup to stderr if not quiet
+        if !cli.quiet {
+            eprintln!("Logging to file: {}", log_file.display());
         }
-        Commands::Client { file } => {
-            info!(
-                "Starting syncpair multi-directory client using config file: {}",
-                file.display()
-            );
-
-            // Load configuration and create multi-directory client
-            let multi_client = MultiDirectoryClient::from_config_file(&file)?;
-
-            info!(
-                "Multi-directory client configured for: {}",
-                multi_client.get_client_id()
-            );
-            info!("Server: {}", multi_client.get_server_url());
-
-            // Display default configuration if present
-            if let Some(ref defaults) = multi_client.config.default {
-                info!("Default configuration:");
-                if let Some(ref desc) = defaults.description {
-                    info!("  Default description: {}", desc);
-                }
-                if let Some(interval) = defaults.sync_interval_seconds {
-                    info!("  Default sync interval: {}s", interval);
-                }
-                if let Some(enabled) = defaults.enabled {
-                    info!("  Default enabled: {}", enabled);
-                }
-                if let Some(shared) = defaults.shared {
-                    info!("  Default shared: {}", shared);
-                }
-                if !defaults.ignore_patterns.is_empty() {
-                    info!("  Default ignore patterns: {:?}", defaults.ignore_patterns);
-                }
-            }
-
-            let enabled_dirs = multi_client.get_enabled_directories();
-            info!("Enabled directories:");
-            for dir_config in &enabled_dirs {
-                // Apply defaults to show effective settings
-                let merged_settings = if let Some(ref defaults) = multi_client.config.default {
-                    dir_config.settings.clone().merge_with_defaults(defaults)
-                } else {
-                    dir_config.settings.clone()
-                };
-                let effective_settings = merged_settings.effective_values();
-
-                info!(
-                    "  - {} ({})",
-                    dir_config.name,
-                    dir_config.local_path.display()
-                );
-                if let Some(ref desc) = effective_settings.description {
-                    info!("    Description: {}", desc);
-                }
-                info!(
-                    "    Sync interval: {}s",
-                    effective_settings.sync_interval_seconds
-                );
-                if effective_settings.shared {
-                    info!("    Shared: true");
-                }
-                if !effective_settings.ignore_patterns.is_empty() {
-                    info!(
-                        "    Ignore patterns: {:?}",
-                        effective_settings.ignore_patterns
-                    );
-                }
-            }
-
-            info!("Starting watch mode. Press Ctrl+C to stop.");
-
-            // Create shutdown channel
-            let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
-
-            // Start watching in a separate task
-            let watch_task = tokio::spawn(async move {
-                if let Err(e) = multi_client
-                    .start_watching_with_shutdown(Some(shutdown_rx))
-                    .await
-                {
-                    error!("Multi-directory watch error: {}", e);
-                }
-            });
-
-            // Wait for Ctrl+C
-            signal::ctrl_c().await?;
-            info!("Shutdown signal received, stopping...");
-
-            // Send shutdown signal to multi-client
-            let _ = shutdown_tx.send(());
-
-            // Wait for the watch task to complete gracefully
-            if let Err(e) = watch_task.await {
-                error!("Error during multi-client shutdown: {}", e);
-            }
-        }
+    } else {
+        // Log to stdout/stderr
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(fmt_layer)
+            .init();
     }
 
-    info!("SyncPair stopped successfully!");
     Ok(())
 }
