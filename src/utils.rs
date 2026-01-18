@@ -1,7 +1,7 @@
 use crate::types::{ClientState, FileInfo, BlockMsg};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use duckdb::{Connection, params};
+use rusqlite::{Connection, params};
 use glob::Pattern;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -170,11 +170,13 @@ pub fn save_client_state(state: &ClientState, state_path: &Path) -> Result<()> {
     Ok(())
 }
 
-// DuckDB-based state management functions
+// SQLite-based state management functions
 pub fn init_state_database(db_path: &Path) -> Result<Connection> {
     let conn = Connection::open(db_path)?;
     
     // Create tables if they don't exist
+    // Note: SQLite uses slightly different types than DuckDB if we were being strict,
+    // but TEXT/BIGINT/TEXT is compatible. encoding is UTF-8 by default.
     conn.execute(
         "CREATE TABLE IF NOT EXISTS sync_state (
             last_sync TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -186,7 +188,7 @@ pub fn init_state_database(db_path: &Path) -> Result<Connection> {
         "CREATE TABLE IF NOT EXISTS file_states (
             file_path TEXT PRIMARY KEY,
             file_hash TEXT NOT NULL,
-            file_size BIGINT NOT NULL,
+            file_size INTEGER NOT NULL,
             modified_at TEXT NOT NULL
         )",
         [],
@@ -235,7 +237,7 @@ pub fn load_client_state_db(db_path: &Path) -> Result<ClientState> {
         let modified_str: String = row.get(3)?;
         let modified = match DateTime::parse_from_rfc3339(&modified_str) {
             Ok(dt) => dt.with_timezone(&Utc),
-            Err(_) => return Err(duckdb::Error::InvalidColumnIndex(3)),
+            Err(_) => return Err(rusqlite::Error::InvalidColumnIndex(3)), // Just using a convenient error variant
         };
         
         Ok(FileInfo {
@@ -258,7 +260,7 @@ pub fn load_client_state_db(db_path: &Path) -> Result<ClientState> {
         let deleted_at_str: String = row.get(1)?;
         let deleted_at = match DateTime::parse_from_rfc3339(&deleted_at_str) {
             Ok(dt) => dt.with_timezone(&Utc),
-            Err(_) => return Err(duckdb::Error::InvalidColumnIndex(1)),
+            Err(_) => return Err(rusqlite::Error::InvalidColumnIndex(1)),
         };
         
         Ok((row.get::<_, String>(0)?, deleted_at))
@@ -277,10 +279,10 @@ pub fn load_client_state_db(db_path: &Path) -> Result<ClientState> {
 }
 
 pub fn save_client_state_db(state: &ClientState, db_path: &Path) -> Result<()> {
-    let conn = init_state_database(db_path)?;
+    let mut conn = init_state_database(db_path)?;
     
     // Begin transaction for consistency
-    let tx = conn.unchecked_transaction()?;
+    let tx = conn.transaction()?;
     
     // Update last sync time
     tx.execute(
