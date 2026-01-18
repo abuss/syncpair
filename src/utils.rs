@@ -1,15 +1,15 @@
-use crate::types::{ClientState, FileInfo, BlockMsg};
+use crate::types::{BlockMsg, ClientState, FileInfo};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use rusqlite::{Connection, params};
 use glob::Pattern;
+use rusqlite::{params, Connection};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs::{self, File};
-use std::path::Path;
 use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::Path;
+use tracing::{debug, warn};
 use walkdir::WalkDir;
-use tracing::{warn, debug};
 
 pub fn calculate_file_hash(path: &Path) -> Result<String> {
     let contents = fs::read(path)?;
@@ -26,23 +26,20 @@ pub fn calculate_block_hashes(path: &Path, block_size: u64) -> Result<Vec<BlockM
     let mut buffer = vec![0u8; block_size as usize];
 
     // Calculate number of blocks
-    let num_blocks = (len + block_size - 1) / block_size;
+    let num_blocks = len.div_ceil(block_size);
 
     for i in 0..num_blocks {
         let bytes_read = file.read(&mut buffer)?;
         if bytes_read == 0 {
             break;
         }
-        
+
         // Hash the actual bytes read (slice of buffer)
         let mut hasher = Sha256::new();
         hasher.update(&buffer[0..bytes_read]);
         let hash = format!("{:x}", hasher.finalize());
 
-        block_hashes.push(BlockMsg {
-            index: i,
-            hash,
-        });
+        block_hashes.push(BlockMsg { index: i, hash });
     }
 
     Ok(block_hashes)
@@ -53,7 +50,7 @@ pub fn patch_file(path: &Path, offset: u64, content: &[u8]) -> Result<()> {
         .write(true)
         .read(true) // Open for reading too, just in case, though write/create is usually enough specifically for writing
         .open(path)?;
-        
+
     file.seek(SeekFrom::Start(offset))?;
     file.write_all(content)?;
     Ok(())
@@ -75,15 +72,18 @@ pub fn scan_directory(dir_path: &Path) -> Result<Vec<FileInfo>> {
     scan_directory_with_patterns(dir_path, &[])
 }
 
-pub fn scan_directory_with_patterns(dir_path: &Path, exclude_patterns: &[String]) -> Result<Vec<FileInfo>> {
+pub fn scan_directory_with_patterns(
+    dir_path: &Path,
+    exclude_patterns: &[String],
+) -> Result<Vec<FileInfo>> {
     let mut files = Vec::new();
-    
+
     // Compile exclude patterns once for efficiency
     let compiled_patterns: Result<Vec<Pattern>, _> = exclude_patterns
         .iter()
         .map(|pattern| Pattern::new(pattern))
         .collect();
-    
+
     let compiled_patterns = match compiled_patterns {
         Ok(patterns) => patterns,
         Err(e) => {
@@ -104,14 +104,14 @@ pub fn scan_directory_with_patterns(dir_path: &Path, exclude_patterns: &[String]
             // Get relative path from the base directory
             let relative_path = entry.path().strip_prefix(dir_path)?;
             let relative_path_str = relative_path.to_string_lossy().to_string();
-            
+
             // Check if file matches any exclude pattern
             let should_exclude = compiled_patterns.iter().any(|pattern| {
                 // Check the full relative path for pattern matches
                 if pattern.matches(&relative_path_str) {
                     return true;
                 }
-                
+
                 // Check if any component of the path matches the pattern
                 // This handles cases like "node_modules" matching "node_modules/package.json"
                 if relative_path.components().any(|component| {
@@ -119,11 +119,18 @@ pub fn scan_directory_with_patterns(dir_path: &Path, exclude_patterns: &[String]
                 }) {
                     return true;
                 }
-                
+
                 // Check just the filename
-                pattern.matches(entry.path().file_name().unwrap_or_default().to_string_lossy().as_ref())
+                pattern.matches(
+                    entry
+                        .path()
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .as_ref(),
+                )
             });
-            
+
             if should_exclude {
                 debug!("Excluding file due to pattern match: {}", relative_path_str);
                 continue;
@@ -173,7 +180,7 @@ pub fn save_client_state(state: &ClientState, state_path: &Path) -> Result<()> {
 // SQLite-based state management functions
 pub fn init_state_database(db_path: &Path) -> Result<Connection> {
     let conn = Connection::open(db_path)?;
-    
+
     // Create tables if they don't exist
     // Note: SQLite uses slightly different types than DuckDB if we were being strict,
     // but TEXT/BIGINT/TEXT is compatible. encoding is UTF-8 by default.
@@ -183,7 +190,7 @@ pub fn init_state_database(db_path: &Path) -> Result<Connection> {
         )",
         [],
     )?;
-    
+
     conn.execute(
         "CREATE TABLE IF NOT EXISTS file_states (
             file_path TEXT PRIMARY KEY,
@@ -193,7 +200,7 @@ pub fn init_state_database(db_path: &Path) -> Result<Connection> {
         )",
         [],
     )?;
-    
+
     conn.execute(
         "CREATE TABLE IF NOT EXISTS deleted_files (
             file_path TEXT PRIMARY KEY,
@@ -201,45 +208,41 @@ pub fn init_state_database(db_path: &Path) -> Result<Connection> {
         )",
         [],
     )?;
-    
+
     // Initialize sync_state if empty
-    let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM sync_state",
-        [],
-        |row| row.get(0)
-    )?;
-    
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM sync_state", [], |row| row.get(0))?;
+
     if count == 0 {
         conn.execute(
             "INSERT INTO sync_state (last_sync) VALUES (?)",
             params![Utc::now().to_rfc3339()],
         )?;
     }
-    
+
     Ok(conn)
 }
 
 pub fn load_client_state_db(db_path: &Path) -> Result<ClientState> {
     let conn = init_state_database(db_path)?;
-    
+
     // Load last sync time
-    let last_sync_str: String = conn.query_row(
-        "SELECT last_sync FROM sync_state LIMIT 1",
-        [],
-        |row| row.get(0)
-    )?;
+    let last_sync_str: String =
+        conn.query_row("SELECT last_sync FROM sync_state LIMIT 1", [], |row| {
+            row.get(0)
+        })?;
     let last_sync = DateTime::parse_from_rfc3339(&last_sync_str)?.with_timezone(&Utc);
-    
+
     // Load files
     let mut files = HashMap::new();
-    let mut stmt = conn.prepare("SELECT file_path, file_hash, file_size, modified_at FROM file_states")?;
+    let mut stmt =
+        conn.prepare("SELECT file_path, file_hash, file_size, modified_at FROM file_states")?;
     let file_iter = stmt.query_map([], |row| {
         let modified_str: String = row.get(3)?;
         let modified = match DateTime::parse_from_rfc3339(&modified_str) {
             Ok(dt) => dt.with_timezone(&Utc),
             Err(_) => return Err(rusqlite::Error::InvalidColumnIndex(3)), // Just using a convenient error variant
         };
-        
+
         Ok(FileInfo {
             path: row.get(0)?,
             hash: row.get(1)?,
@@ -247,12 +250,12 @@ pub fn load_client_state_db(db_path: &Path) -> Result<ClientState> {
             modified,
         })
     })?;
-    
+
     for file_result in file_iter {
         let file_info = file_result?;
         files.insert(file_info.path.clone(), file_info);
     }
-    
+
     // Load deleted files
     let mut deleted_files = HashMap::new();
     let mut stmt = conn.prepare("SELECT file_path, deleted_at FROM deleted_files")?;
@@ -262,15 +265,15 @@ pub fn load_client_state_db(db_path: &Path) -> Result<ClientState> {
             Ok(dt) => dt.with_timezone(&Utc),
             Err(_) => return Err(rusqlite::Error::InvalidColumnIndex(1)),
         };
-        
+
         Ok((row.get::<_, String>(0)?, deleted_at))
     })?;
-    
+
     for deleted_result in deleted_iter {
         let (path, deleted_at) = deleted_result?;
         deleted_files.insert(path, deleted_at);
     }
-    
+
     Ok(ClientState {
         files,
         deleted_files,
@@ -280,19 +283,19 @@ pub fn load_client_state_db(db_path: &Path) -> Result<ClientState> {
 
 pub fn save_client_state_db(state: &ClientState, db_path: &Path) -> Result<()> {
     let mut conn = init_state_database(db_path)?;
-    
+
     // Begin transaction for consistency
     let tx = conn.transaction()?;
-    
+
     // Update last sync time
     tx.execute(
         "UPDATE sync_state SET last_sync = ?",
         params![state.last_sync.to_rfc3339()],
     )?;
-    
+
     // Clear existing file states
     tx.execute("DELETE FROM file_states", [])?;
-    
+
     // Insert current file states
     for file_info in state.files.values() {
         tx.execute(
@@ -300,10 +303,10 @@ pub fn save_client_state_db(state: &ClientState, db_path: &Path) -> Result<()> {
             params![file_info.path, file_info.hash, file_info.size, file_info.modified.to_rfc3339()],
         )?;
     }
-    
+
     // Clear existing deleted files
     tx.execute("DELETE FROM deleted_files", [])?;
-    
+
     // Insert current deleted files
     for (path, deleted_at) in &state.deleted_files {
         tx.execute(
@@ -311,9 +314,9 @@ pub fn save_client_state_db(state: &ClientState, db_path: &Path) -> Result<()> {
             params![path, deleted_at.to_rfc3339()],
         )?;
     }
-    
+
     // Commit transaction
     tx.commit()?;
-    
+
     Ok(())
 }
