@@ -1,12 +1,13 @@
-use crate::types::{ClientState, FileInfo};
+use crate::types::{ClientState, FileInfo, BlockMsg};
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use duckdb::{Connection, params};
 use glob::Pattern;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::fs;
+use std::fs::{self, File};
 use std::path::Path;
+use std::io::{Read, Seek, SeekFrom, Write};
 use walkdir::WalkDir;
 use tracing::{warn, debug};
 
@@ -15,6 +16,47 @@ pub fn calculate_file_hash(path: &Path) -> Result<String> {
     let mut hasher = Sha256::new();
     hasher.update(&contents);
     Ok(format!("{:x}", hasher.finalize()))
+}
+
+pub fn calculate_block_hashes(path: &Path, block_size: u64) -> Result<Vec<BlockMsg>> {
+    let mut file = File::open(path)?;
+    let metadata = file.metadata()?;
+    let len = metadata.len();
+    let mut block_hashes = Vec::new();
+    let mut buffer = vec![0u8; block_size as usize];
+
+    // Calculate number of blocks
+    let num_blocks = (len + block_size - 1) / block_size;
+
+    for i in 0..num_blocks {
+        let bytes_read = file.read(&mut buffer)?;
+        if bytes_read == 0 {
+            break;
+        }
+        
+        // Hash the actual bytes read (slice of buffer)
+        let mut hasher = Sha256::new();
+        hasher.update(&buffer[0..bytes_read]);
+        let hash = format!("{:x}", hasher.finalize());
+
+        block_hashes.push(BlockMsg {
+            index: i,
+            hash,
+        });
+    }
+
+    Ok(block_hashes)
+}
+
+pub fn patch_file(path: &Path, offset: u64, content: &[u8]) -> Result<()> {
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .read(true) // Open for reading too, just in case, though write/create is usually enough specifically for writing
+        .open(path)?;
+        
+    file.seek(SeekFrom::Start(offset))?;
+    file.write_all(content)?;
+    Ok(())
 }
 
 pub fn get_file_info(path: &Path, relative_path: &str) -> Result<FileInfo> {

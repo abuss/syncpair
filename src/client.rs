@@ -4,12 +4,16 @@ use reqwest::Client;
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::Duration;
+use std::io::{Read, Seek, SeekFrom};
 use tokio::time::{sleep, interval, MissedTickBehavior};
 use tokio::sync::broadcast;
 use tracing::{info, warn, error, debug};
 
-use crate::types::{FileInfo, UploadRequest, UploadResponse, SyncRequest, SyncResponse, DownloadResponse, DeleteRequest, DeleteResponse};
-use crate::utils::{scan_directory_with_patterns, get_file_info, load_client_state_db, save_client_state_db, calculate_file_hash};
+use crate::types::{FileInfo, UploadRequest, UploadResponse, SyncRequest, SyncResponse, DownloadResponse, DeleteRequest, DeleteResponse, DeltaInitRequest, DeltaInitResponse, BlockUploadRequest, BlockUploadResponse};
+use crate::utils::{scan_directory_with_patterns, get_file_info, load_client_state_db, save_client_state_db, calculate_file_hash, calculate_block_hashes};
+
+const DELTA_SYNC_THRESHOLD: u64 = 1024 * 1024; // 1 MB
+const BLOCK_SIZE: u64 = 1024 * 1024; // 1 MB
 
 #[derive(Clone)]
 pub struct SimpleClient {
@@ -399,13 +403,27 @@ impl SimpleClient {
 
     async fn upload_file(&self, file_info: &FileInfo) -> Result<()> {
         let file_path = self.watch_dir.join(&file_info.path);
-        let content = std::fs::read(&file_path)?;
         
         // Verify hash before upload
         let actual_hash = calculate_file_hash(&file_path)?;
         if actual_hash != file_info.hash {
             return Err(anyhow::anyhow!("Hash mismatch for file: {}", file_info.path));
         }
+
+        // Check for Delta Sync
+        if file_info.size > DELTA_SYNC_THRESHOLD {
+             match self.upload_file_delta(file_info, &file_path).await {
+                 Ok(true) => return Ok(()), // Delta sync succeeded
+                 Ok(false) => debug!("Delta sync recommended full upload for {}", file_info.path), // Fallback
+                 Err(e) => {
+                     error!("Delta sync failed for {}, falling back to full upload: {}", file_info.path, e);
+                     // Fallback
+                 }
+             }
+        }
+        
+        // Full Upload Fallback
+        let content = std::fs::read(&file_path)?;
         
         let upload_request = UploadRequest {
             file_info: file_info.clone(),
@@ -424,12 +442,83 @@ impl SimpleClient {
             .await?;
         
         if response.success {
-            debug!("✓ Uploaded: {}", file_info.path);
+            debug!("✓ Uploaded (Full): {}", file_info.path);
         } else {
             return Err(anyhow::anyhow!("Upload failed: {}", response.message));
         }
         
         Ok(())
+    }
+
+    async fn upload_file_delta(&self, file_info: &FileInfo, file_path: &std::path::Path) -> Result<bool> {
+        debug!("Attempting delta sync for: {}", file_info.path);
+        
+        let block_hashes = calculate_block_hashes(file_path, BLOCK_SIZE)?;
+        
+        let init_req = DeltaInitRequest {
+            file_info: file_info.clone(),
+            block_hashes,
+            block_size: BLOCK_SIZE,
+            client_id: self.client_id.clone(),
+            directory: self.directory.clone(),
+        };
+        
+        let url = format!("{}/delta/init", self.server_url);
+        let init_res: DeltaInitResponse = self.http_client
+            .post(&url)
+            .json(&init_req)
+            .send()
+            .await?
+            .json()
+            .await?;
+            
+        if init_res.should_full_upload {
+            return Ok(false);
+        }
+        
+        if init_res.missing_block_indices.is_empty() {
+            debug!("✓ No blocks need uploading for {}", file_info.path);
+            return Ok(true);
+        }
+        
+        debug!("Uploading {} missing blocks for {}", init_res.missing_block_indices.len(), file_info.path);
+        
+        let mut file = std::fs::File::open(file_path)?;
+        
+        for index in init_res.missing_block_indices {
+            let offset = index * BLOCK_SIZE;
+            file.seek(SeekFrom::Start(offset))?;
+            
+            let mut buffer = vec![0u8; BLOCK_SIZE as usize];
+            let bytes_read = file.read(&mut buffer)?;
+            
+            // Truncate buffer to actual bytes read
+            buffer.truncate(bytes_read);
+            
+            let upload_req = BlockUploadRequest {
+                path: file_info.path.clone(),
+                directory: self.directory.clone().unwrap_or_default(), // Should ensure directory is set
+                index,
+                content: buffer,
+                client_id: self.client_id.clone(),
+            };
+            
+            let url = format!("{}/delta/upload", self.server_url);
+            let res: BlockUploadResponse = self.http_client
+                .post(&url)
+                .json(&upload_req)
+                .send()
+                .await?
+                .json()
+                .await?;
+                
+            if !res.success {
+                return Err(anyhow::anyhow!("Block {} upload failed: {}", index, res.message));
+            }
+        }
+        
+        debug!("✓ Delta upload complete: {}", file_info.path);
+        Ok(true)
     }
 
     async fn download_file(&self, file_path: &str) -> Result<()> {

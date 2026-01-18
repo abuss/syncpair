@@ -271,3 +271,44 @@ pub mod error {
         Watch(String),
     }
 }
+
+// Delta Sync Types
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BlockMsg {
+    pub index: u64,
+    pub hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeltaInitRequest {
+    pub file_info: FileInfo,
+    pub block_hashes: Vec<BlockMsg>,
+    pub block_size: u64,
+    #[serde(default)]
+    pub client_id: Option<String>,
+    #[serde(default)]
+    pub directory: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeltaInitResponse {
+    pub missing_block_indices: Vec<u64>,
+    pub should_full_upload: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BlockUploadRequest {
+    pub path: String,
+    pub directory: String,
+    pub index: u64,
+    pub content: Vec<u8>,
+    #[serde(default)]
+    pub client_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BlockUploadResponse {
+    pub success: bool,
+    pub message: String,
+}
