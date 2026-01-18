@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex};
 use warp::Filter;
 use tracing::{info, warn, error, debug};
 
-use crate::types::{FileInfo, UploadRequest, UploadResponse, SyncRequest, SyncResponse, FileConflict, DownloadResponse, DeleteRequest, DeleteResponse, DeltaInitRequest, DeltaInitResponse, BlockUploadRequest, BlockUploadResponse};
-use crate::utils::{calculate_file_hash, load_client_state_db, save_client_state_db, init_state_database, calculate_block_hashes, patch_file};
+use crate::types::{FileInfo, UploadRequest, UploadResponse, SyncRequest, SyncResponse, FileConflict, DownloadResponse, DeleteRequest, DeleteResponse, DeltaInitRequest, DeltaInitResponse, BlockUploadRequest, BlockUploadResponse, DeltaCompleteRequest, DeltaCompleteResponse};
+use crate::utils::{calculate_file_hash, load_client_state_db, save_client_state_db, init_state_database, calculate_block_hashes, patch_file, get_file_info};
 use crate::types::ClientState;
 
 #[derive(Clone)]
@@ -58,6 +58,7 @@ impl SimpleServer {
         let server_for_delete = self.clone();
         let server_for_delta_init = self.clone();
         let server_for_block_upload = self.clone();
+        let server_for_delta_complete = self.clone();
         
         let upload_route = warp::path("upload")
             .and(warp::post())
@@ -192,12 +193,32 @@ impl SimpleServer {
                 }
             });
 
+        let delta_complete_route = warp::path!("delta" / "complete")
+            .and(warp::post())
+            .and(warp::body::json())
+            .and_then(move |complete_req: DeltaCompleteRequest| {
+                let server = server_for_delta_complete.clone();
+                async move {
+                    match server.handle_delta_complete(complete_req).await {
+                        Ok(response) => Ok::<_, warp::Rejection>(warp::reply::json(&response)),
+                        Err(e) => {
+                            let error_response = DeltaCompleteResponse {
+                                success: false,
+                                message: format!("Delta completion failed: {}", e),
+                            };
+                            Ok(warp::reply::json(&error_response))
+                        }
+                    }
+                }
+            });
+
         let routes = upload_route
             .or(sync_route)
             .or(download_route)
             .or(delete_route)
             .or(delta_init_route)
             .or(delta_upload_route)
+            .or(delta_complete_route)
             .with(warp::cors().allow_any_origin().allow_methods(vec!["GET", "POST", "DELETE"]).allow_headers(vec!["content-type"]));
 
         info!("Server starting on http://0.0.0.0:{}", port);
@@ -680,6 +701,11 @@ impl SimpleServer {
         
         patch_file(&file_path, offset, &upload_req.content)?;
         
+        // Optimizing: Do NOT recalculate hash and update state after every block
+        // Just patch the file and return success. 
+        // The client must call /delta/complete to finalize.
+
+        /*
         // Update state
         // Recalculating hash... potentially expensive but necessary for consistency
         let file_info = crate::utils::get_file_info(&file_path, &upload_req.path)?;
@@ -695,12 +721,65 @@ impl SimpleServer {
         if state_modified {
              self.atomic_save_directory_state(&upload_req.directory)?;
         }
+        */
         
         debug!("✓ Patched block {} for {}", upload_req.index, upload_req.path);
         
         Ok(BlockUploadResponse {
             success: true,
             message: "Block uploaded".to_string(),
+        })
+    }
+
+    async fn handle_delta_complete(&self, complete_req: DeltaCompleteRequest) -> Result<DeltaCompleteResponse> {
+        let directory_name = complete_req.directory
+             .ok_or_else(|| anyhow::anyhow!("Missing 'directory'"))?;
+             
+        let directory_storage_dir = self.get_directory_storage_dir(&directory_name);
+        let file_path = directory_storage_dir.join(&complete_req.path);
+        
+        if !file_path.exists() {
+             return Ok(DeltaCompleteResponse {
+                 success: false,
+                 message: "File not found for completion".to_string(),
+             });
+        }
+        
+        // Calculate hash ONCE
+        let file_info = get_file_info(&file_path, &complete_req.path)?;
+        
+        // Verify against expected hash if provided? 
+        // The client provided expected_hash. Let's verify it matches what we calculated.
+        if file_info.hash != complete_req.expected_hash {
+             return Ok(DeltaCompleteResponse {
+                 success: false,
+                 message: format!("Hash mismatch after patch: expected {}, got {}", complete_req.expected_hash, file_info.hash),
+             });
+        }
+        
+        // Update state
+        let state_modified = {
+            let mut directory_storage = self.directory_storage.lock().unwrap();
+             // Ensure directory exists in map (should be there from ensure_directory_exists called previous steps, or init)
+             if !directory_storage.contains_key(&directory_name) {
+                 // Should ideally not happen if delta init/upload called first, but safe to guard
+                  directory_storage.insert(directory_name.clone(), (HashMap::new(), HashMap::new()));
+             }
+             
+            let (directory_files, _) = directory_storage.get_mut(&directory_name).unwrap();
+            directory_files.insert(complete_req.path.clone(), file_info);
+            true
+        };
+        
+        if state_modified {
+             self.atomic_save_directory_state(&directory_name)?;
+        }
+        
+        info!("✓ Delta sync complete for {}", complete_req.path);
+        
+        Ok(DeltaCompleteResponse {
+            success: true,
+            message: "Delta sync finalized".to_string(),
         })
     }
 }

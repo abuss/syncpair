@@ -312,3 +312,17 @@ pub struct BlockUploadResponse {
     pub success: bool,
     pub message: String,
 }
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DeltaCompleteRequest {
+    pub path: String,
+    pub directory: Option<String>,
+    pub client_id: Option<String>,
+    pub expected_hash: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DeltaCompleteResponse {
+    pub success: bool,
+    pub message: String,
+}
