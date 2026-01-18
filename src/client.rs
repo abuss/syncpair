@@ -7,9 +7,10 @@ use std::time::Duration;
 use std::io::{Read, Seek, SeekFrom};
 use tokio::time::{sleep, interval, MissedTickBehavior};
 use tokio::sync::broadcast;
+use futures::stream::{self, StreamExt};
 use tracing::{info, warn, error, debug};
 
-use crate::types::{FileInfo, UploadRequest, UploadResponse, SyncRequest, SyncResponse, DownloadResponse, DeleteRequest, DeleteResponse, DeltaInitRequest, DeltaInitResponse, BlockUploadRequest, BlockUploadResponse};
+use crate::types::{FileInfo, UploadRequest, UploadResponse, SyncRequest, SyncResponse, DownloadResponse, DeleteRequest, DeleteResponse, DeltaInitRequest, DeltaInitResponse, BlockUploadRequest, BlockUploadResponse, DeltaCompleteRequest, DeltaCompleteResponse};
 use crate::utils::{scan_directory_with_patterns, get_file_info, load_client_state_db, save_client_state_db, calculate_file_hash, calculate_block_hashes};
 
 const DELTA_SYNC_THRESHOLD: u64 = 1024 * 1024; // 1 MB
@@ -140,31 +141,75 @@ impl SimpleClient {
             }
         }
         
-        // Upload files that need to be uploaded
-        for file_path in &sync_response.files_to_upload {
-            if let Some(file_info) = client_files.get(file_path) {
-                debug!("↑ Uploading: {}", file_path);
-                if let Err(e) = self.upload_file(file_info).await {
-                    error!("✗ Failed to upload {}: {}", file_path, e);
-                }
-            }
+        // Define concurrency limit
+        const CONCURRENCY_LIMIT: usize = 10;
+
+        if !sync_response.files_to_upload.is_empty() {
+            info!("Processing {} uploads...", sync_response.files_to_upload.len());
+            // Clone the vector to own the data for the stream
+            let files_to_upload = sync_response.files_to_upload.clone();
+            let upload_tasks = stream::iter(files_to_upload.into_iter())
+                .map(|file_path| {
+                    let file_path = file_path; // already owned string
+                    // Clone file_info if found to move into async block
+                    let file_info = client_files.get(&file_path).cloned(); // file_info needs to be Clone
+                    let client = self.clone(); // Clone client for shared state
+
+                    async move {
+                         if let Some(file_info) = file_info {
+                            debug!("↑ Uploading: {}", file_path);
+                            if let Err(e) = client.upload_file(&file_info).await {
+                                error!("✗ Failed to upload {}: {}", file_path, e);
+                            }
+                        }
+                    }
+                })
+                .buffer_unordered(CONCURRENCY_LIMIT);
+            
+            upload_tasks.collect::<Vec<()>>().await;
         }
         
-        // Download files that need to be downloaded
-        for file_info in &sync_response.files_to_download {
-            debug!("↓ Downloading: {}", file_info.path);
-            if let Err(e) = self.download_file(&file_info.path).await {
-                error!("✗ Failed to download {}: {}", file_info.path, e);
-                warn!("  → File may have been deleted from server or is inaccessible");
-            }
+        // Process downloads in parallel
+        if !sync_response.files_to_download.is_empty() {
+             info!("Processing {} downloads...", sync_response.files_to_download.len());
+             // Clone the vector to own the data for the stream
+             let files_to_download = sync_response.files_to_download.clone();
+             let download_tasks = stream::iter(files_to_download.into_iter())
+                .map(|file_info| {
+                    let file_info = file_info; // moved and owned
+                    let client = self.clone();
+                    async move {
+                        debug!("↓ Downloading: {}", file_info.path);
+                        if let Err(e) = client.download_file(&file_info.path).await {
+                            error!("✗ Failed to download {}: {}", file_info.path, e);
+                            warn!("  → File may have been deleted from server or is inaccessible");
+                        }
+                    }
+                })
+                .buffer_unordered(CONCURRENCY_LIMIT);
+                
+            download_tasks.collect::<Vec<()>>().await;
         }
-        
-        // Delete files that need to be deleted
-        for file_path in &sync_response.files_to_delete {
-            debug!("🗑️  Deleting: {}", file_path);
-            if let Err(e) = self.delete_file(file_path).await {
-                error!("✗ Failed to delete {}: {}", file_path, e);
-            }
+
+        // Process deletions in parallel
+        if !sync_response.files_to_delete.is_empty() {
+            info!("Processing {} deletions...", sync_response.files_to_delete.len());
+            // Clone the vector to own the data for the stream
+            let files_to_delete = sync_response.files_to_delete.clone();
+             let delete_tasks = stream::iter(files_to_delete.into_iter())
+                .map(|file_path| {
+                    let file_path = file_path; // moved and owned
+                    let client = self.clone();
+                    async move {
+                        debug!("🗑️  Deleting: {}", file_path);
+                        if let Err(e) = client.delete_file(&file_path).await {
+                            error!("✗ Failed to delete {}: {}", file_path, e);
+                        }
+                    }
+                })
+                .buffer_unordered(CONCURRENCY_LIMIT);
+            
+            delete_tasks.collect::<Vec<()>>().await;
         }
         
         // Update state with all current files (re-scan after downloads)
@@ -517,7 +562,29 @@ impl SimpleClient {
             }
         }
         
-        debug!("✓ Delta upload complete: {}", file_info.path);
+        debug!("✓ Delta upload (blocks) complete: {}", file_info.path);
+        
+        // Finalize delta sync
+        let complete_req = DeltaCompleteRequest {
+            path: file_info.path.clone(),
+            directory: self.directory.clone(),
+            client_id: self.client_id.clone(),
+            expected_hash: file_info.hash.clone(),
+        };
+        
+        let url = format!("{}/delta/complete", self.server_url);
+        let res: DeltaCompleteResponse = self.http_client
+            .post(&url)
+            .json(&complete_req)
+            .send()
+            .await?
+            .json()
+            .await?;
+            
+        if !res.success {
+            return Err(anyhow::anyhow!("Delta completion failed: {}", res.message));
+        }
+        
         Ok(true)
     }
 
