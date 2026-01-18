@@ -48,8 +48,6 @@ pub struct DefaultSettings {
     pub shared: Option<bool>,
 }
 
-
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DirectoryConfig {
     pub name: String,
@@ -71,8 +69,6 @@ pub struct DirectorySettings {
     #[serde(default)]
     pub shared: Option<bool>,
 }
-
-
 
 impl DirectorySettings {
     /// Merge this DirectorySettings with defaults, where defaults provide fallback values
