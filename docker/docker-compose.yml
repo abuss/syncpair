@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  syncpair:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: syncpair:latest
+    container_name: syncpair-server
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./server_storage:/data
+    environment:
+      - RUST_LOG=info
+    # Optional: Override command if needed
+    # command: syncpair --log-level debug server --port 8080 --storage-dir /data

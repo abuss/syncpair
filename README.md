@@ -11,6 +11,8 @@ SyncPair is a lightweight Rust-based file synchronization tool that enables **re
 - **Timestamp-based conflict resolution**: Newer files automatically win conflicts across all clients
 - **File deletion synchronization**: Deletions propagate between all collaborating clients and server
 - **Hash-based change detection**: Uses SHA-256 hashes to identify file changes efficiently
+- **Parallel File Processing**: Concurrent uploads, downloads, and deletions for high performance
+- **Delta Synchronization**: Efficiently syncs large files by transferring only changed blocks
 - **Real-time file watching**: Monitors filesystem changes and syncs automatically using `notify`
 - **Connection resilience**: Automatic retry with exponential backoff when server unavailable
 - **Comprehensive logging**: Professional logging system with multiple verbosity levels
@@ -377,7 +379,7 @@ When the same file is modified on multiple clients:
 - **Server State**: Maintains synchronized files and global deletion history with `server_state.db` database
 - **Change Detection**: Compares file hashes and modification timestamps to determine sync actions
 - **Deletion Tracking**: Timestamp-based deleted file tracking prevents conflicts and resurrection
-- **Database Storage**: Uses embedded DuckDB for better performance, ACID transactions, and query capabilities
+- **Database Storage**: Uses embedded SQLite (via rusqlite) for better performance, ACID transactions, and query capabilities
 
 ## Logging System
 
@@ -430,7 +432,7 @@ Each log entry includes:
 - **SyncServer**: Advanced HTTP server using Warp framework with comprehensive REST API
 - **SyncClient**: Intelligent filesystem watcher with bidirectional sync, conflict resolution, and retry logic
 - **File Verification**: SHA-256 hash calculation and comparison for integrity
-- **State Management**: DuckDB-based persistence with ACID transactions for reliability
+- **State Management**: SQLite-based persistence with ACID transactions for reliability
 - **Conflict Resolution**: Timestamp-based automatic conflict resolution system
 - **Connection Management**: Resilient HTTP client with exponential backoff retry logic
 
@@ -444,6 +446,9 @@ RESTful HTTP API with JSON payloads:
 - `POST /upload`: Upload file with metadata (path, hash, content, timestamp)
 - `GET /download/{path}`: Download file by path with integrity verification
 - `DELETE /delete/{path}`: Delete file from server storage and update state
+- `POST /delta/init`: Initialize delta sync for large files
+- `POST /delta/upload`: Upload a file block (1MB)
+- `POST /delta/complete`: Finalize delta sync and verify integrity
 
 ### Data Structures
 
@@ -650,6 +655,42 @@ directories:
 - **After**: Multiple clients share same directory (`server_storage/documents/` accessed by all clients)
 - **Real-time Collaboration**: Alice and Bob can now work on the same files simultaneously with instant synchronization
 
+## Docker & Podman Support
+
+SyncPair can be easily deployed using Docker or Podman.
+
+### Using Docker Compose (Recommended)
+
+1. Ensure `docker-compose.yml` is present.
+2. Run the server:
+   ```bash
+   docker-compose up -d
+   ```
+3. The server will start on port 8080, with data persisted in `./server_storage`.
+
+### Using Docker CLI
+
+Build the image:
+```bash
+docker build -t syncpair .
+```
+
+Run the container:
+```bash
+docker run -d \
+  --name syncpair-server \
+  -p 8080:8080 \
+  -v $(pwd)/server_storage:/data \
+  syncpair
+```
+
+### Podman
+The commands are compatible with Podman. Just replace `docker` with `podman`:
+```bash
+podman build -t syncpair .
+podman run -d --name syncpair-server -p 8080:8080 -v $(pwd)/server_storage:/data syncpair
+```
+
 ## Limitations & Design Decisions
 
 - **No authentication**: Plain HTTP without security (suitable for trusted team networks)
@@ -668,7 +709,6 @@ Potential improvements for advanced team deployments:
 - Bandwidth throttling and rate limiting for large distributed teams
 - Resume capability for large files (chunked uploads) for teams with large media files
 - File compression during transport for teams with limited bandwidth
-- Delta sync for large files (binary diff) optimizing team collaboration on large documents
 - Web-based team administration interface for managing collaborative directories
 - Metrics and monitoring endpoints for team usage analytics
 - Distributed server architecture (clustering) for large-scale team deployments

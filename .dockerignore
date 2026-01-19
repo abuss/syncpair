@@ -1,0 +1,8 @@
+target/
+.git/
+server_storage/
+.syncpair_state.db
+*.log
+docker/
+README.md
+tests/
