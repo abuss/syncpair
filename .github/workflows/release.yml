@@ -1,9 +1,10 @@
 name: Release
 
 on:
+  workflow_dispatch:
   push:
     tags:
-      - 'v*'
+      - "v*"
 
 permissions:
   contents: write
@@ -44,7 +45,13 @@ jobs:
           rustup target add ${{ env.rust_target }}
           echo "CARGO_BUILD_TARGET=${{ env.rust_target }}" >> $GITHUB_ENV
       - name: Build
-        run: cargo build --release --target ${{ env.CARGO_BUILD_TARGET }} --verbose
+        run: |
+          if [ -n "${{ env.CARGO_BUILD_TARGET }}" ]; then
+            cargo build --release --target ${{ env.CARGO_BUILD_TARGET }} --verbose
+          else
+            cargo build --release --verbose
+          fi
+        shell: bash
 
       - name: Set build path
         run: |
