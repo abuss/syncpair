@@ -43,7 +43,8 @@ jobs:
         run: |
           rustup target add ${{ env.rust_target }}
           echo "CARGO_BUILD_TARGET=${{ env.rust_target }}" >> $GITHUB_ENV
-      - name: Build Release
+      - name: Build Release (non-Windows)
+        if: matrix.os != 'windows-latest'
         run: |
           if [ -n "${{ env.CARGO_BUILD_TARGET }}" ]; then
             cargo build --release --target ${{ env.CARGO_BUILD_TARGET }} --verbose
@@ -51,9 +52,22 @@ jobs:
             cargo build --release --verbose
           fi
 
+      - name: Build Release (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          cargo build --release --verbose
+      - name: Set build path
+        if: matrix.os != 'windows-latest'
+        run: |
+          if [ -n "${{ env.CARGO_BUILD_TARGET }}" ]; then
+            echo "BUILD_PATH=target/${{ env.CARGO_BUILD_TARGET }}/release" >> $GITHUB_ENV
+          else
+            echo "BUILD_PATH=target/release" >> $GITHUB_ENV
+          fi
       - name: Rename Binary (Linux/macOS)
         if: matrix.os != 'windows-latest'
-        run: mv target/release/${{ matrix.artifact_name }} target/release/${{ matrix.asset_name }}
+        run: mv ${{ env.BUILD_PATH }}/${{ matrix.artifact_name }} ${{ env.BUILD_PATH }}/${{ matrix.asset_name }}
 
       - name: Rename Binary (Windows)
         if: matrix.os == 'windows-latest'
