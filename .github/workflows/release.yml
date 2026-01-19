@@ -18,9 +18,16 @@ jobs:
           - os: ubuntu-latest
             artifact_name: syncpair
             asset_name: syncpair-linux-amd64
+          - os: ubuntu-latest
+            rust_target: aarch64-unknown-linux-gnu
+            artifact_name: syncpair
+            asset_name: syncpair-linux-arm64
           - os: macos-latest
             artifact_name: syncpair
             asset_name: syncpair-macos-amd64
+          - os: macos-14
+            artifact_name: syncpair
+            asset_name: syncpair-macos-arm64
           - os: windows-latest
             artifact_name: syncpair.exe
             asset_name: syncpair-windows-amd64.exe
@@ -31,8 +38,18 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install target for cross‑compile (if needed)
+        if: env.rust_target != ''
+        run: |
+          rustup target add ${{ env.rust_target }}
+          echo "CARGO_BUILD_TARGET=${{ env.rust_target }}" >> $GITHUB_ENV
       - name: Build Release
-        run: cargo build --release --verbose
+        run: |
+          if [ -n "${{ env.CARGO_BUILD_TARGET }}" ]; then
+            cargo build --release --target ${{ env.CARGO_BUILD_TARGET }} --verbose
+          else
+            cargo build --release --verbose
+          fi
 
       - name: Rename Binary (Linux/macOS)
         if: matrix.os != 'windows-latest'
