@@ -1,6 +1,6 @@
 use anyhow::Result;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
@@ -106,7 +106,7 @@ impl MultiDirectoryClient {
 
                 // Forward shutdown signals to individual clients
                 tokio::spawn(async move {
-                    if let Ok(_) = main_rx_clone.recv().await {
+                    if main_rx_clone.recv().await.is_ok() {
                         let _ = tx_clone.send(());
                     }
                 });
@@ -217,7 +217,7 @@ impl MultiDirectoryClient {
             .collect()
     }
 
-    fn expand_path(path: &PathBuf) -> Result<PathBuf> {
+    fn expand_path(path: &Path) -> Result<PathBuf> {
         let path_str = path.to_string_lossy();
 
         if path_str.starts_with("~/") {
@@ -228,7 +228,7 @@ impl MultiDirectoryClient {
                 Err(anyhow::anyhow!("Could not determine home directory"))
             }
         } else {
-            Ok(path.clone())
+            Ok(path.to_path_buf())
         }
     }
 }

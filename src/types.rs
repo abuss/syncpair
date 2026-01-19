@@ -34,7 +34,7 @@ pub struct ClientConfig {
     pub directories: Vec<DirectoryConfig>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DefaultSettings {
     #[serde(default)]
     pub description: Option<String>,
@@ -48,18 +48,6 @@ pub struct DefaultSettings {
     pub shared: Option<bool>,
 }
 
-impl Default for DefaultSettings {
-    fn default() -> Self {
-        Self {
-            description: None,
-            sync_interval_seconds: None,
-            enabled: None,
-            ignore_patterns: Vec::new(),
-            shared: None,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DirectoryConfig {
     pub name: String,
@@ -68,7 +56,7 @@ pub struct DirectoryConfig {
     pub settings: DirectorySettings,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DirectorySettings {
     #[serde(default)]
     pub description: Option<String>,
@@ -80,18 +68,6 @@ pub struct DirectorySettings {
     pub ignore_patterns: Vec<String>,
     #[serde(default)]
     pub shared: Option<bool>,
-}
-
-impl Default for DirectorySettings {
-    fn default() -> Self {
-        Self {
-            description: None,
-            sync_interval_seconds: None,
-            enabled: None,
-            ignore_patterns: Vec::new(),
-            shared: None,
-        }
-    }
 }
 
 impl DirectorySettings {
